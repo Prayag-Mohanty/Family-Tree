@@ -89,6 +89,32 @@
     return { people };
   }
 
+  // Undo history (this session only). Call remember() before every data change.
+  const undoStack = [], redoStack = [];
+  function remember(label) {
+    undoStack.push({ label, data: JSON.stringify(state) });
+    if (undoStack.length > 100) undoStack.shift();
+    redoStack.length = 0;
+  }
+  function restore(from, to, verb) {
+    const snap = from.pop();
+    if (!snap) { toast(verb === 'Undid' ? 'Nothing to undo' : 'Nothing to redo'); return; }
+    to.push({ label: snap.label, data: JSON.stringify(state) });
+    state = normalize(JSON.parse(snap.data));
+    if (selectedId && !P(selectedId)) closePanel();
+    save(); render();
+    if (selectedId) renderPanel();
+    toast(`${verb}: ${snap.label}`);
+  }
+  const undo = () => restore(undoStack, redoStack, 'Undid');
+  const redo = () => restore(redoStack, undoStack, 'Redid');
+  function updateUndoButtons() {
+    $('#undoBtn').disabled = !undoStack.length;
+    $('#redoBtn').disabled = !redoStack.length;
+    $('#undoBtn').title = undoStack.length ? `Undo ${undoStack[undoStack.length - 1].label} (Ctrl+Z)` : 'Undo (Ctrl+Z)';
+    $('#redoBtn').title = redoStack.length ? `Redo ${redoStack[redoStack.length - 1].label} (Ctrl+Shift+Z)` : 'Redo (Ctrl+Shift+Z)';
+  }
+
   function save() {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
     catch { toast('Could not save — browser storage may be full (try smaller photos).'); }
@@ -120,12 +146,15 @@
   const P = (id) => state.people[id];
   const all = () => Object.values(state.people);
 
+  // Eldest first: birth order when both have one, else birth year, else whoever has either.
   function byAge(a, b) {
     const A = P(a), B = P(b);
-    const ya = +A.birthYear || 9999, yb = +B.birthYear || 9999;
-    if (ya !== yb) return ya - yb;
-    const oa = +A.order || 99, ob = +B.order || 99;
-    if (oa !== ob) return oa - ob;
+    const oa = +A.order || 0, ob = +B.order || 0;
+    if (oa && ob && oa !== ob) return oa - ob;
+    const ya = +A.birthYear || 0, yb = +B.birthYear || 0;
+    if (ya && yb && ya !== yb) return ya - yb;
+    const ka = oa || ya ? 0 : 1, kb = ob || yb ? 0 : 1;   // unknowns go last
+    if (ka !== kb) return ka - kb;
     return A.name.localeCompare(B.name);
   }
   function childrenOf(id) { return all().filter((c) => c.parents.includes(id)).map((c) => c.id).sort(byAge); }
@@ -155,9 +184,10 @@
   //
   // People married to each other form a "unit" (a couple, or one person).
   // Every unit hangs under the unit of its anchor's parents, which turns the
-  // family graph into a tree we can lay out cleanly. A spouse who is not the
-  // anchor (e.g. a daughter who married into another family) also appears as
-  // a small link card among her own siblings, so no family looks incomplete.
+  // family graph into a tree we can lay out cleanly. When a spouse's own
+  // parents are also in the tree (e.g. a daughter who married into another
+  // family), the whole couple and their descendants are drawn a second time
+  // under her parents, and a dotted line joins her two cards.
 
   // A family = a couple, all their descendants, and those descendants' spouses.
   function familyOf(rootId) {
@@ -231,18 +261,28 @@
       if (v === u) u.parent = null;
     }
     for (const u of units) if (u.parent) u.parent.kids.push(u);
-    // Link cards for spouses whose own parents are elsewhere in the tree.
+
+    // --- copies of a couple's family under the other spouse's parents
+    const clone = (u, prefix, anchor) => ({
+      key: prefix + u.key, anchor: anchor || u.anchor, members: u.members, gen: u.gen, mirror: true,
+      kids: u.kids.filter((k) => !k.mirror).map((k) => clone(k, prefix)),
+    });
+    const bridges = [];
     for (const u of units) {
       for (const m of u.members) {
         if (m === u.anchor) continue;
         const pu = people[m].parents.map((x) => unitOf.get(x)).find((v) => v && v !== u);
-        if (pu) pu.kids.push({ ghost: true, key: 'g:' + m, anchor: m, members: [m], kids: [], gen: gen[m], home: u });
+        if (!pu) continue;
+        const copy = clone(u, `m:${m}:`, m);
+        pu.kids.push(copy);
+        bridges.push({ person: m, real: u, copy });
       }
     }
-    for (const u of units) u.kids.sort((a, b) => byAge(a.anchor, b.anchor));
+    const sortKids = (u) => { u.kids.sort((a, b) => byAge(a.anchor, b.anchor)); u.kids.forEach(sortKids); };
+    units.filter((u) => !u.parent).forEach(sortKids);
 
     const unitW = (u) => u.members.length * CARD_W + (u.members.length - 1) * SPOUSE_GAP;
-    const descCount = (u) => u.kids.reduce((n, k) => n + (k.ghost ? 1 : k.members.length + descCount(k)), 0);
+    const descCount = (u) => u.kids.reduce((n, k) => n + k.members.length + descCount(k), 0);
 
     // --- measure / place (parents centred over their children)
     function measure(u) {
@@ -253,12 +293,11 @@
       return (u.w = Math.max(w, u.kw));
     }
     const minGen = Math.min(0, ...Object.values(gen));
-    const pos = new Map();        // real cards
-    const ghostPos = new Map();   // link cards
+    const pos = new Map();          // the primary card of each person
     const visibleUnits = [];
     function place(u, left) {
       const w = unitW(u);
-      u.y = (u.gen - minGen) * ROW_H;
+      u.y = (u.gen - minGen) * ROW_H + PAD;
       if (u.open) {
         let cx = left + (u.w - u.kw) / 2;
         for (const k of u.kids) { place(k, cx); cx += k.w + SIB_GAP; }
@@ -266,7 +305,8 @@
         const centre = (f.x + unitW(f) / 2 + l.x + unitW(l) / 2) / 2;
         u.x = clamp(centre - w / 2, left, left + u.w - w);
       } else u.x = left + (u.w - w) / 2;
-      u.members.forEach((m, i) => (u.ghost ? ghostPos : pos).set(m, { x: u.x + i * (CARD_W + SPOUSE_GAP), y: u.y }));
+      u.mpos = new Map(u.members.map((m, i) => [m, { x: u.x + i * (CARD_W + SPOUSE_GAP), y: u.y }]));
+      for (const [m, p] of u.mpos) if (!u.mirror || !pos.has(m)) pos.set(m, p);
       visibleUnits.push(u);
     }
 
@@ -294,18 +334,18 @@
         for (const n of [...links.get(r)].sort((a, b) => b.w - a.w)) if (!seen.has(n)) { seen.add(n); queue.push(n); }
       }
     }
-    let x = 0;
+    let x = PAD;
     for (const r of ordered) { place(r, x); x += r.w + TREE_GAP; }
-
-    for (const m of [pos, ghostPos]) for (const [, v] of m) { v.x += PAD; v.y += PAD; }
-    visibleUnits.forEach((u) => { u.x += PAD; u.y += PAD; });
 
     const maxGen = Math.max(0, ...visibleUnits.map((u) => u.gen - minGen));
     const first = ordered[0];
     return {
-      people, pos, ghostPos, unitOf, visibleUnits, unitW, descCount, roots: ordered,
+      people, pos, unitOf, visibleUnits, unitW, descCount, roots: ordered,
+      bridges: bridges.filter((b) => b.real.mpos && b.copy.mpos && visibleUnits.includes(b.real) && visibleUnits.includes(b.copy)),
+      byKey: new Map(visibleUnits.map((u) => [u.key, u])),
+      allPos: visibleUnits.flatMap((u) => [...u.mpos.values()]),
       focusX: first ? first.x + unitW(first) / 2 : 0,
-      width: Math.max(0, x - TREE_GAP) + PAD * 2,
+      width: Math.max(0, x - TREE_GAP) + PAD,
       height: (maxGen) * ROW_H + CARD_H + PAD * 2,
       generations: new Set(Object.values(gen)).size,
     };
@@ -342,6 +382,7 @@
   }
 
   // ============================================================== render
+  // ============================================================== render
 
   function elbow(sx, sy, cx, cy, busY) {
     if (Math.abs(cx - sx) < 1) return `M${sx},${sy}V${cy}`;
@@ -350,12 +391,10 @@
     return `M${sx},${sy}V${busY - r}Q${sx},${busY} ${sx + d * r},${busY}H${cx - d * r}Q${cx},${busY} ${cx},${busY + r}V${cy}`;
   }
 
-  function cardHTML(id, x, y, ghostOf) {
+  function cardHTML(id, x, y, copy) {
     const p = P(id);
-    const sub = ghostOf
-      ? `Married to ${P(ghostOf).name} ↗`
-      : [p.nickname && `“${p.nickname}”`, years(p)].filter(Boolean).join(' · ') || p.location || '';
-    return `<div class="card ${p.gender}${isDead(p) ? ' dead' : ''}${ghostOf ? ' ghost' : ''}" data-id="${esc(id)}"${ghostOf ? ' data-ghost="1"' : ''} style="left:${x}px;top:${y}px" tabindex="0" role="button" aria-label="${esc(p.name)}${ghostOf ? ' (go to their family)' : ''}" ${ghostOf ? 'title="Shown with their spouse. Click to go there."' : ''}>
+    const sub = [p.nickname && `“${p.nickname}”`, years(p)].filter(Boolean).join(' · ') || p.location || '';
+    return `<div class="card ${p.gender}${isDead(p) ? ' dead' : ''}${copy ? ' copy' : ''}" data-id="${esc(id)}" style="left:${x}px;top:${y}px" tabindex="0" role="button" aria-label="${esc(p.name)}"${copy ? ' title="Also shown in their other family (see the dotted line)"' : ''}>
         ${avatar(p)}
         <div class="txt"><div class="nm">${esc(p.name)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>
       </div>`;
@@ -363,15 +402,14 @@
 
   function render() {
     L = computeLayout(currentScope());
-    const { pos, ghostPos, visibleUnits, unitW } = L;
+    const { visibleUnits, unitW } = L;
     const nodes = [];
     const paths = [];
 
     for (const u of visibleUnits) {
-      if (u.ghost) continue;
       // spouse links
       for (let i = 0; i + 1 < u.members.length; i++) {
-        const a = pos.get(u.members[i]), b = pos.get(u.members[i + 1]);
+        const a = u.mpos.get(u.members[i]), b = u.mpos.get(u.members[i + 1]);
         const y = a.y + CARD_H / 2;
         paths.push(`<path class="spouse" d="M${a.x + CARD_W},${y}H${b.x}"/>`);
         paths.push(`<circle class="ring" cx="${(a.x + CARD_W + b.x) / 2}" cy="${y}" r="4"/>`);
@@ -380,24 +418,33 @@
       if (!u.open) continue;
       for (const k of u.kids) {
         const c = k.anchor;
-        const cp = (k.ghost ? ghostPos : pos).get(c);
+        const cp = k.mpos.get(c);
         const par = L.people[c].parents.filter((x) => u.members.includes(x));
         if (!cp || !par.length) continue;
-        const pts = par.map((x) => pos.get(x));
+        const pts = par.map((x) => u.mpos.get(x));
         let sx, sy;
         if (pts.length === 2) { sx = (Math.min(pts[0].x, pts[1].x) + CARD_W + Math.max(pts[0].x, pts[1].x)) / 2; sy = pts[0].y + CARD_H / 2 + 4; }
         else { sx = pts[0].x + CARD_W / 2; sy = pts[0].y + CARD_H; }
-        const cx = cp.x + CARD_W / 2, cy = cp.y;
-        paths.push(`<path class="tree${k.ghost ? ' to-ghost' : ''}" data-c="${esc(c)}" data-p="${esc(par.join(' '))}" d="${elbow(sx, sy, cx, cy, cy - 44)}"/>`);
+        paths.push(`<path class="tree" data-c="${esc(c)}" data-p="${esc(par.join(' '))}" d="${elbow(sx, sy, cp.x + CARD_W / 2, cp.y, cp.y - 44)}"/>`);
       }
     }
 
-    for (const [id, p] of pos) nodes.push(cardHTML(id, p.x, p.y));
-    for (const u of visibleUnits) if (u.ghost) { const p = ghostPos.get(u.anchor); nodes.push(cardHTML(u.anchor, p.x, p.y, u.home.anchor === u.anchor ? u.home.members.find((m) => m !== u.anchor) : u.home.anchor)); }
+    // dotted lines joining the two cards of someone shown in two families
+    for (const b of L.bridges) {
+      const a = b.real.mpos.get(b.person), c = b.copy.mpos.get(b.person);
+      const ax = a.x + CARD_W / 2, cx = c.x + CARD_W / 2;
+      const lift = Math.min(150, 60 + Math.abs(cx - ax) * 0.08);
+      const d = `M${ax},${a.y}C${ax},${a.y - lift} ${cx},${c.y - lift} ${cx},${c.y}`;
+      paths.push(`<path class="bridge" data-c="${esc(b.person)}" data-p="" d="${d}"/>`);
+      const mx = (ax + cx) / 2, my = (a.y + c.y) / 2 - lift * 0.75;
+      paths.push(`<g class="bridge-tag" transform="translate(${mx},${my})"><rect x="-58" y="-12" width="116" height="24" rx="12"/><text text-anchor="middle" y="5">same person</text></g>`);
+    }
+
+    for (const u of visibleUnits) for (const [id, p] of u.mpos) nodes.push(cardHTML(id, p.x, p.y, u.mirror));
 
     // expand / collapse pills
     for (const u of visibleUnits) {
-      if (u.ghost || !u.kids.length) continue;
+      if (!u.kids.length) continue;
       const cx = u.x + unitW(u) / 2;
       const cy = u.y + CARD_H + 30;
       const n = L.descCount(u);
@@ -418,6 +465,7 @@
       : `<span><b>${total}</b> ${total === 1 ? 'person' : 'people'}</span><span><b>${total ? L.generations : 0}</b> generations</span>`;
     $('#showAll')?.addEventListener('click', () => setScope(null));
     renderScopeSelect();
+    updateUndoButtons();
     const banner = $('#banner');
     banner.hidden = banner.dataset.closed === '1' || !all().some(isPlaceholder);
 
@@ -497,7 +545,7 @@
     if (!L || !L.pos.size) return;
     const r = safeRect();
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const p of L.pos.values()) { minX = Math.min(minX, p.x); minY = Math.min(minY, p.y); maxX = Math.max(maxX, p.x + CARD_W); maxY = Math.max(maxY, p.y + CARD_H); }
+    for (const p of L.allPos) { minX = Math.min(minX, p.x); minY = Math.min(minY, p.y); maxX = Math.max(maxX, p.x + CARD_W); maxY = Math.max(maxY, p.y + CARD_H); }
     let k = clamp(Math.min((r.w - 60) / (maxX - minX), (r.h - 60) / (maxY - minY)), 0.12, 1);
     let cy = r.y + r.h / 2 - ((minY + maxY) / 2) * k;
     let cx = r.x + r.w / 2 - ((minX + maxX) / 2) * k;
@@ -505,8 +553,8 @@
     const target = { k, x: cx, y: cy };
     animate ? animateTo(target) : (Object.assign(cam, target), applyCam());
   }
-  function centreOn(id, minK = 0.85) {
-    const p = L.pos.get(id);
+  function centreOn(target, minK = 0.85) {
+    const p = typeof target === 'string' ? L.pos.get(target) : target;
     if (!p) return;
     const r = safeRect();
     const k = Math.max(cam.k, minK);
@@ -514,10 +562,10 @@
   }
 
   // Keep a given person fixed on screen while the layout changes underneath.
-  function keepSteady(id, fn) {
-    const before = L?.pos.get(id);
+  function keepSteady(key, fn) {
+    const b = L?.byKey.get(key), before = b && { x: b.x, y: b.y };
     fn();
-    const after = L?.pos.get(id);
+    const after = L?.byKey.get(key);
     if (before && after) { cam.x += (before.x - after.x) * cam.k; cam.y += (before.y - after.y) * cam.k; applyCam(); }
   }
 
@@ -593,11 +641,11 @@
     if (t) { toggle(t.dataset.toggle); return; }
     if (moved > 4) return;
     const c = e.target.closest('.card');
-    if (c) c.dataset.ghost ? locate(c.dataset.id) : select(c.dataset.id);
+    if (c) select(c.dataset.id, true, c);
   });
   $('#nodes').addEventListener('keydown', (e) => {
     const c = e.target.closest('.card');
-    if (c && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); c.dataset.ghost ? locate(c.dataset.id) : select(c.dataset.id); }
+    if (c && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); select(c.dataset.id, true, c); }
   });
   viewport.addEventListener('click', (e) => {
     if (moved <= 4 && !e.target.closest('.card, .tgl')) closePanel();
@@ -631,15 +679,16 @@
 
   // =============================================================== panel
 
-  function select(id, keepInView = true) {
+  // el: the card that was clicked (a person can have two cards)
+  function select(id, keepInView = true, el = null) {
     selectedId = id;
     applySelection();
     renderPanel();
     if (keepInView) {
-      const p = L.pos.get(id), r = safeRect();
+      const p = el ? { x: parseFloat(el.style.left), y: parseFloat(el.style.top) } : L.pos.get(id), r = safeRect();
       if (p) {
         const sx = p.x * cam.k + cam.x, sy = p.y * cam.k + cam.y;
-        if (sx < r.x || sx + CARD_W * cam.k > r.x + r.w || sy < r.y || sy + CARD_H * cam.k > r.y + r.h) centreOn(id, cam.k);
+        if (sx < r.x || sx + CARD_W * cam.k > r.x + r.w || sy < r.y || sy + CARD_H * cam.k > r.y + r.h) centreOn(p, cam.k);
       }
     }
   }
@@ -712,6 +761,7 @@
     const p = P(id);
     const n = childrenOf(id).length;
     if (!confirm(`Delete ${p.name}?` + (n ? `\n\nTheir ${n} child(ren) stay in the tree, just without this parent.` : ''))) return;
+    remember(`delete ${p.name}`);
     delete state.people[id];
     for (const o of all()) {
       o.parents = o.parents.filter((x) => x !== id);
@@ -871,6 +921,7 @@
       deceased: F('deceased').checked || !!F('deathYear').value, photo: editing.photo,
       parents: parentsPicker.get(), spouses: spousePicker.get(),
     };
+    remember(old ? `edit ${old.name}` : `add ${name}`);
     for (const s of old?.spouses || []) if (!d.spouses.includes(s) && P(s)) P(s).spouses = P(s).spouses.filter((x) => x !== id);
     state.people[id] = d;
     for (const s of d.spouses) if (P(s) && !P(s).spouses.includes(id)) P(s).spouses.push(id);
@@ -928,7 +979,7 @@
       }
       case 'reset':
         if (!confirm('Replace everything with the starter tree? Export a backup first if you want to keep your data.')) return;
-        state = starterTree(); collapsed.clear(); scopeId = null; closePanel(); save(); saveUI(); render(); fit();
+        remember('reset'); state = starterTree(); collapsed.clear(); scopeId = null; closePanel(); save(); saveUI(); render(); fit();
         toast('Reset to starter tree');
         break;
     }
@@ -941,15 +992,21 @@
     try {
       const data = normalize(JSON.parse(await f.text()));
       if (!confirm(`Replace the current tree (${all().length} people) with this file (${Object.keys(data.people).length} people)?`)) return;
-      state = data; collapsed.clear(); scopeId = null; closePanel(); save(); saveUI(); render(); fit();
+      remember('import'); state = data; collapsed.clear(); scopeId = null; closePanel(); save(); saveUI(); render(); fit();
       toast('Imported ' + f.name);
     } catch { toast('That file is not a valid family tree backup.'); }
   });
   $('#scopeSelect').addEventListener('change', (e) => setScope(e.target.value));
   $('#bannerClose').onclick = () => { $('#banner').dataset.closed = '1'; $('#banner').hidden = true; saveUI(); };
 
+  $('#undoBtn').onclick = undo;
+  $('#redoBtn').onclick = redo;
   document.addEventListener('keydown', (e) => {
     if (dlg.open) return;
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && !typing && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+    if (mod && !typing && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
     if (e.key === '/' && document.activeElement !== sInput) { e.preventDefault(); sInput.focus(); }
     else if (e.key === 'Escape') closePanel();
   });
