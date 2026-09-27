@@ -170,6 +170,39 @@
     if (!p.parents.length) return [];
     return all().filter((c) => c.id !== id && c.parents.some((x) => p.parents.includes(x))).map((c) => c.id).sort(byAge);
   }
+  // Siblings whose parents aren't known share a stand-in "Parents unknown" card.
+  const UNKNOWN = 'Parents unknown';
+  const realPeople = () => all().filter((p) => !p.unknown);
+  function makeUnknownParent() {
+    const u = blankPerson({ name: UNKNOWN, unknown: true });
+    state.people[u.id] = u;
+    return u.id;
+  }
+  // Make a and b brothers/sisters. Returns an error message, or '' when done.
+  function linkSiblings(a, b) {
+    const A = P(a), B = P(b);
+    if (!A || !B || a === b || A.parents.some((x) => B.parents.includes(x))) return '';
+    if (!A.parents.length && !B.parents.length) { const u = makeUnknownParent(); A.parents = [u]; B.parents = [u]; return ''; }
+    if (!B.parents.length) { B.parents = [...A.parents]; return ''; }
+    if (!A.parents.length) { A.parents = [...B.parents]; return ''; }
+    // One side only has stand-in parents: move that whole group of siblings under the known parents.
+    const onlyUnknown = (ps) => ps.every((x) => P(x).unknown);
+    const merge = (from, to) => { for (const c of all()) if (c.parents.length && c.parents.every((x) => from.includes(x))) c.parents = [...to]; };
+    if (onlyUnknown(B.parents)) { merge([...B.parents], A.parents); return ''; }
+    if (onlyUnknown(A.parents)) { merge([...A.parents], B.parents); return ''; }
+    return `${A.name} and ${B.name} already have different parents, so they can't be linked as siblings.`;
+  }
+  // Stand-in parents linking fewer than two children aren't needed any more.
+  function cleanupUnknown() {
+    for (const u of all()) {
+      if (!u.unknown || u.spouses.length) continue;
+      if (all().filter((c) => c.parents.includes(u.id)).length < 2) {
+        delete state.people[u.id];
+        for (const o of all()) o.parents = o.parents.filter((x) => x !== u.id);
+      }
+    }
+  }
+
   const initials = (p) => (p.name || '?').split(/\s+/).filter((w) => /\w/.test(w)).slice(0, 2).map((w) => w.match(/\w/)[0]).join('').toUpperCase() || '?';
   function years(p) {
     const b = p.birthYear, d = p.deathYear;
@@ -182,7 +215,11 @@
   const isDead = (p) => p.deceased || !!p.deathYear;
   const avatar = (p, cls = '') => `<div class="av ${p.gender} ${cls}"${p.photo ? ` style="background-image:url('${esc(p.photo)}')"` : ''}>${p.photo ? '' : esc(initials(p))}</div>`;
   function context(p) {
-    if (p.parents.length) return `${p.gender === 'male' ? 'Son' : p.gender === 'female' ? 'Daughter' : 'Child'} of ${p.parents.map((x) => P(x).name).join(' & ')}`;
+    if (p.parents.length && p.parents.every((x) => P(x).unknown)) {
+      const sibs = siblingsOf(p.id).map((x) => P(x).name);
+      return `${p.gender === 'male' ? 'Brother' : p.gender === 'female' ? 'Sister' : 'Sibling'} of ${sibs.join(', ')}`;
+    }
+    if (p.parents.length) return `${p.gender === 'male' ? 'Son' : p.gender === 'female' ? 'Daughter' : 'Child'} of ${p.parents.filter((x) => !P(x).unknown).map((x) => P(x).name).join(' & ')}`;
     if (p.spouses.length) return `Spouse of ${p.spouses.map((x) => P(x).name).join(', ')}`;
     return p.location || '';
   }
@@ -377,7 +414,10 @@
 
   // ======================================================= family filter
 
-  const coupleName = (id) => [id, ...P(id).spouses].map((x) => P(x).name).join(' & ');
+  const coupleName = (id) => P(id).unknown
+    ? `the parents of ${childrenOf(id).map((c) => P(c).name.split(' ')[0]).join(', ')}`
+    : [id, ...P(id).spouses].map((x) => P(x).name).join(' & ');
+  const familySize = (id) => [...familyOf(id)].filter((x) => !P(x).unknown).length;
 
   function currentScope() {
     if (!scopeId || !P(scopeId)) { scopeId = null; return null; }
@@ -389,8 +429,8 @@
     const families = full.roots.filter((u) => u.kids.length).map((u) => u.anchor);
     if (scopeId && !families.some((f) => f === scopeId || P(f).spouses.includes(scopeId))) families.push(scopeId);
     const sel = $('#scopeSelect');
-    sel.innerHTML = `<option value="">Everyone (${all().length})</option>` + families.map((id) =>
-      `<option value="${esc(id)}">Family of ${esc(coupleName(id))} (${familyOf(id).size})</option>`).join('');
+    sel.innerHTML = `<option value="">Everyone (${realPeople().length})</option>` + families.map((id) =>
+      `<option value="${esc(id)}">Family of ${esc(coupleName(id))} (${familySize(id)})</option>`).join('');
     const match = scopeId && families.find((f) => f === scopeId || P(f).spouses.includes(scopeId));
     sel.value = match || '';
     $('#scopeWrap').classList.toggle('active', !!scopeId);
@@ -419,6 +459,11 @@
 
   function cardHTML(id, x, y, copy, rank = 0, rankOf = 0) {
     const p = P(id);
+    if (p.unknown) {
+      return `<div class="card unknown" data-id="${esc(id)}" style="left:${x}px;top:${y}px" tabindex="0" role="button" aria-label="Parents unknown">
+        <div class="av">?</div><div class="txt"><div class="nm">Parents unknown</div><div class="sub">Add a name if you find out</div></div>
+      </div>`;
+    }
     const sub = [p.nickname && `“${p.nickname}”`, years(p)].filter(Boolean).join(' · ') || p.location || '';
     return `<div class="card ${p.gender}${isDead(p) ? ' dead' : ''}${copy ? ' copy' : ''}" data-id="${esc(id)}" style="left:${x}px;top:${y}px" tabindex="0" role="button" aria-label="${esc(p.name)}"${copy ? ' title="Also shown in their other family (see the dotted line)"' : ''}>
         ${avatar(p)}
@@ -486,9 +531,9 @@
     svg.innerHTML = paths.join('');
     $('#nodes').innerHTML = nodes.join('');
 
-    const total = all().length;
+    const total = realPeople().length;
     $('#stats').innerHTML = scopeId
-      ? `<span><b>${Object.keys(L.people).length}</b> of ${total} people</span><button class="link" id="showAll">Show everyone</button>`
+      ? `<span><b>${Object.values(L.people).filter((p) => !p.unknown).length}</b> of ${total} people</span><button class="link" id="showAll">Show everyone</button>`
       : `<span><b>${total}</b> ${total === 1 ? 'person' : 'people'}</span><span><b>${total ? L.generations : 0}</b> generations</span>`;
     $('#showAll')?.addEventListener('click', () => setScope(null));
     renderScopeSelect();
@@ -732,6 +777,21 @@
   function renderPanel() {
     const id = selectedId, p = P(id);
     if (!p) return closePanel();
+    if (p.unknown) {
+      const kids = childrenOf(id);
+      $('#panelBody').innerHTML = `
+        <div class="p-head"><div class="av xl">?</div><h2 class="p-name">Parents unknown</h2></div>
+        <p class="p-notes">This card links brothers and sisters whose parents aren’t in the tree yet. When you find out, click <em>Add their name</em> to make it a real person.</p>
+        <div class="p-sec"><h4>Brothers &amp; sisters · ${kids.length}</h4><div class="chips">${kids.map(chip).join('')}</div></div>
+        <div class="p-actions">
+          <button class="btn primary wide" data-act="edit">Add their name</button>
+          <button class="btn wide" data-act="add-child">+ Another brother or sister</button>
+          <button class="btn ghost danger wide" data-act="delete">Unlink these siblings</button>
+        </div>`;
+      $('#panel').classList.add('open');
+      $('#panel').setAttribute('aria-hidden', 'false');
+      return;
+    }
     const facts = [
       ['Born', p.birthYear], ['Died', p.deathYear || (p.deceased ? 'Yes' : '')],
       ['Birth order', p.order ? `#${p.order} among siblings` : ''], ['Lives in', p.location],
@@ -747,13 +807,14 @@
       </div>
       ${facts.length ? `<dl class="p-facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${k === 'Phone' ? v : esc(v)}</dd>`).join('')}</dl>` : ''}
       ${p.notes ? `<div class="p-notes">${esc(p.notes)}</div>` : ''}
-      ${sec('Parents', p.parents)}
+      ${sec('Parents', p.parents.filter((x) => !P(x).unknown))}
+      ${p.parents.length && p.parents.every((x) => P(x).unknown) ? '<div class="p-sec"><h4>Parents</h4><div class="muted">Not known yet</div></div>' : ''}
       ${sec(p.spouses.length > 1 ? 'Spouses' : 'Spouse', p.spouses)}
       ${sec('Siblings', siblingsOf(id))}
       ${sec('Children', childrenOf(id))}
       <div class="p-actions">
         <button class="btn primary wide" data-act="edit">Edit details</button>
-        <button class="btn" data-act="add-parent" ${p.parents.length >= 2 ? 'disabled' : ''}>+ Parent</button>
+        <button class="btn" data-act="add-parent" ${p.parents.filter((x) => !P(x).unknown).length >= 2 ? 'disabled' : ''}>+ Parent</button>
         <button class="btn" data-act="add-spouse">+ Spouse</button>
         <button class="btn" data-act="add-sibling">+ Sibling</button>
         <button class="btn" data-act="add-child">+ Child</button>
@@ -776,10 +837,8 @@
       case 'edit': openEditor(id); break;
       case 'add-child': openEditor(null, { parents: [id, ...p.spouses.slice(0, 1)] }); break;
       case 'add-spouse': openEditor(null, { spouses: [id], gender: p.gender === 'male' ? 'female' : p.gender === 'female' ? 'male' : '' }); break;
-      case 'add-sibling':
-        if (!p.parents.length) { toast(`Add ${p.name}'s parent first. Siblings hang under the same parents.`); break; }
-        openEditor(null, { parents: [...p.parents] }); break;
-      case 'add-parent': openEditor(null, { spouses: p.parents.slice(0, 1) }, { childOf: id }); break;
+      case 'add-sibling': openEditor(null, { parents: [...p.parents] }, { siblingOf: id }); break;
+      case 'add-parent': openEditor(null, { spouses: p.parents.filter((x) => !P(x).unknown).slice(0, 1) }, { childOf: id }); break;
       case 'scope': setScope(id); break;
       case 'relate': openRelations(meId && meId !== id && P(meId) ? meId : null, id); break;
       case 'delete': deletePerson(id); break;
@@ -789,17 +848,18 @@
   function deletePerson(id) {
     const p = P(id);
     const n = childrenOf(id).length;
-    if (!confirm(`Delete ${p.name}?` + (n ? `\n\nTheir ${n} child(ren) stay in the tree, just without this parent.` : ''))) return;
+    if (!p.unknown && !confirm(`Delete ${p.name}?` + (n ? `\n\nTheir ${n} child(ren) stay in the tree, just without this parent.` : ''))) return;
     remember(`delete ${p.name}`);
     delete state.people[id];
     for (const o of all()) {
       o.parents = o.parents.filter((x) => x !== id);
       o.spouses = o.spouses.filter((x) => x !== id);
     }
+    cleanupUnknown();
     collapsed.delete(id);
     closePanel();
     save(); saveUI(); render();
-    toast(`Deleted ${p.name}`);
+    toast(p.unknown ? 'Unlinked those siblings' : `Deleted ${p.name}`);
   }
 
   // ============================================================== search
@@ -808,7 +868,7 @@
     q = q.trim().toLowerCase();
     if (!q) return [];
     const scored = [];
-    for (const p of all()) {
+    for (const p of realPeople()) {
       const name = p.name.toLowerCase(), nick = (p.nickname || '').toLowerCase();
       let s = 0;
       if (name.startsWith(q) || nick.startsWith(q)) s = 4;
@@ -896,6 +956,7 @@
   const F = (n) => form.elements.namedItem(n);
   const parentsPicker = makePicker($('#parentsPicker'), { max: 2 });
   const spousePicker = makePicker($('#spousePicker'), {});
+  const siblingsPicker = makePicker($('#siblingsPicker'), { placeholder: 'Type a brother’s or sister’s name…' });
   let editing = null;
 
   function drawPhoto() {
@@ -907,19 +968,21 @@
 
   function openEditor(id, preset = {}, extra = {}) {
     const base = id ? P(id) : blankPerson(preset);
-    editing = { id: base.id, isNew: !id, childOf: extra.childOf || null, photo: base.photo };
-    $('#editTitle').textContent = id ? `Edit ${base.name}` : 'Add person';
+    editing = { id: base.id, isNew: !id, childOf: extra.childOf || null, photo: base.photo, oldSibs: id ? siblingsOf(id) : [] };
+    $('#editTitle').textContent = base.unknown ? 'Add the parent’s name' : id ? `Edit ${base.name}` : 'Add person';
     const fields = { fullName: base.name, nickname: base.nickname, gender: base.gender, birthYear: base.birthYear, deathYear: base.deathYear, order: base.order, location: base.location, phone: base.phone, notes: base.notes };
     for (const [k, v] of Object.entries(fields)) F(k).value = v ?? '';
     F('deceased').checked = !!base.deceased;
     // Placeholder names: clear the field but show the old name as a hint.
-    if (id && isPlaceholder(base)) { F('fullName').value = ''; F('fullName').placeholder = base.name; } else F('fullName').placeholder = '';
+    if (id && (isPlaceholder(base) || base.unknown)) { F('fullName').value = ''; F('fullName').placeholder = base.name; } else F('fullName').placeholder = '';
     // Can't be your own parent/spouse, and a child can't be your parent.
     const descendants = new Set();
     const walk = (x) => childrenOf(x).forEach((c) => { if (!descendants.has(c)) { descendants.add(c); walk(c); } });
     if (id) walk(id);
     parentsPicker.set(base.parents, [base.id, ...descendants]);
     spousePicker.set(base.spouses, [base.id]);
+    siblingsPicker.set(id ? editing.oldSibs : extra.siblingOf ? [extra.siblingOf] : [], [base.id, ...descendants]);
+    $('#siblingsField').hidden = !!base.unknown;
     drawPhoto();
     dlg.showModal();
     F('fullName').focus();
@@ -950,6 +1013,7 @@
       location: F('location').value.trim(), phone: F('phone').value.trim(), notes: F('notes').value.trim(),
       deceased: F('deceased').checked || !!F('deathYear').value, photo: editing.photo,
       parents: parentsPicker.get(), spouses: spousePicker.get(),
+      unknown: !!old?.unknown && !F('fullName').value.trim(),
     };
     remember(old ? `edit ${old.name}` : `add ${name}`);
     for (const s of old?.spouses || []) if (!d.spouses.includes(s) && P(s)) P(s).spouses = P(s).spouses.filter((x) => x !== id);
@@ -957,8 +1021,24 @@
     for (const s of d.spouses) if (P(s) && !P(s).spouses.includes(id)) P(s).spouses.push(id);
     if (editing.childOf && P(editing.childOf)) {
       const c = P(editing.childOf);
-      if (!c.parents.includes(id) && c.parents.length < 2) c.parents.push(id);
+      const standIns = c.parents.filter((x) => P(x).unknown);
+      if (standIns.length && !c.parents.includes(id)) {
+        // The new parent replaces "Parents unknown" for every sibling it linked.
+        for (const k of all()) if (k.parents.some((x) => standIns.includes(x))) k.parents = [...k.parents.filter((x) => !standIns.includes(x)), id].slice(0, 2);
+      } else if (!c.parents.includes(id) && c.parents.length < 2) c.parents.push(id);
     }
+    // Brothers and sisters: removing one only works through stand-in parents.
+    const sibs = d.unknown ? [] : siblingsPicker.get();
+    const problems = [];
+    for (const s of editing.oldSibs) {
+      if (sibs.includes(s) || !P(s)) continue;
+      const shared = d.parents.filter((x) => P(s).parents.includes(x));
+      if (shared.length && shared.every((x) => P(x).unknown)) d.parents = d.parents.filter((x) => !shared.includes(x));
+      else problems.push(`${P(s).name} shares real parents with ${name}. Change the parents to separate them.`);
+    }
+    for (const s of sibs) { const err = linkSiblings(id, s); if (err) problems.push(err); }
+    cleanupUnknown();
+    if (problems.length) setTimeout(() => toast(problems[0]), 2700);
     dlg.close();
     save();
     render();
@@ -1219,7 +1299,7 @@
 
     // Everyone, as related to the first person
     if (a) {
-      const rows = all().filter((p) => p.id !== a).map((p) => ({ p, r: termsFor(a, p.id) })).filter((x) => !x.r.none)
+      const rows = realPeople().filter((p) => p.id !== a).map((p) => ({ p, r: termsFor(a, p.id) })).filter((x) => !x.r.none)
         .sort((x, y) => (x.r.n ?? 99) - (y.r.n ?? 99) || x.p.name.localeCompare(y.p.name));
       $('#relAll').innerHTML = `<div class="rel-all-head"><h3>Everyone, as related to ${esc(P(a).name)}</h3>
           <input class="pk-input" id="relFilter" placeholder="Filter…"></div>

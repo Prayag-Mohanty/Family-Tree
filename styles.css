@@ -405,3 +405,11 @@ dialog::backdrop { background: rgba(255, 255, 255, .12); -webkit-backdrop-filter
 /* Lists you read from stay a little more opaque, still see-through */
 .results, .menu { background: rgba(255, 255, 255, .8); }
 .pk-list { -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }
+
+/* stand-in card linking siblings whose parents aren't known */
+.card.unknown { border-style: dashed; border-color: rgba(0, 0, 0, .18); box-shadow: none; background: rgba(255, 255, 255, .25); }
+.card.unknown::before { display: none; }
+.card.unknown .av { color: var(--faint); font-size: 18px; }
+.card.unknown .nm { font-weight: 500; font-style: italic; color: var(--muted); }
+.card.unknown .sub { color: var(--faint); }
+#siblingsField[hidden] { display: none; }
