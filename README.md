@@ -1,13 +1,14 @@
 # 🌳 Family Tree
 
-A small website to keep track of a large family, so you never blank on a relative's name again.
+One connected family tree for a large family. Find anyone, see who their parents and children are, and keep it up to date.
 
-- **Tree view.** Each family is drawn as a tree. Every card shows the person's name, what you call them (e.g. *Bada Bapa*, *Mausi*) and **how they're related to you**, worked out automatically (e.g. *Father's elder brother's son*).
-- **People view.** A searchable list grouped into Immediate family / Father's side / Mother's side.
-- **Quiz me.** Flash-card quiz ("What's the name of your mother's younger sister?") to help you memorise names before a wedding or visit.
-- **Add, edit, delete.** Tap anyone to add a child, spouse, sibling or parent, or to edit notes, photo, city and phone.
-- **Search.** Search by name, nickname, city or notes.
-- **Backup.** Export and import your tree as JSON from the `⋯` menu.
+- **One tree.** Both sides of the family sit in a single layout. People who married in are joined to their own parents by a dashed line.
+- **Connectors.** Every person is linked to their parents and children. Click someone to highlight those links and open their details.
+- **Expand and collapse.** The small pill under each couple hides or shows their descendants (`+12` means 12 people are hidden).
+- **Find anyone.** Search by name, nickname, city or notes (press `/`). Picking a result opens any collapsed branches, flies to the person and highlights them.
+- **Edit.** Add, edit or delete people. From anyone's panel you can add a parent, spouse, sibling or child, and set a photo, birth and death years, city, phone and notes.
+- **Backup.** Export and import the whole tree as JSON from the `⋯` menu.
+- **Getting around.** Drag to pan, scroll or pinch to zoom, and use **Fit** to see everyone.
 
 ## Run it
 
@@ -21,18 +22,18 @@ To put it online, enable **GitHub Pages** for this repo (Settings → Pages → 
 
 ## Where the data lives
 
-Your edits are saved in your browser's local storage, so they stay on that device and in that browser only.
-To move the tree to another device, use **⋯ → Export backup** and then **Import backup** on the other device.
+Edits are saved in the browser's local storage, so each device and browser keeps its own copy.
+To move the tree to another device, use **⋯ → Export backup**, then **Import backup** on the other device.
 
 Optional: if you commit an exported file as `family.json` next to `index.html`, a fresh browser loads it automatically.
-Only do this if the repo is **private**, because it contains names, phone numbers and photos.
+Only do this in a **private** repo, because it contains names, phone numbers and photos.
 
 ## Starter tree
 
-The first load has placeholders for your known structure. Tap each one to enter the real name:
+The first load has placeholders for the known structure. Click each one to enter the real name.
 
-- Paternal grandparents → 4 sons (Father is 2nd)
-- Maternal grandparents → Mother (eldest), 2 more daughters, then 1 son
-- Father + Mother → You, and a younger sibling
+- Paternal grandparents → 4 sons (the 2nd is the father)
+- Maternal grandparents → 3 daughters (the 1st is the mother), then 1 son
+- Father + Mother → 2 children
 
-Fill in **Birth order** or **Birth year** so the site can say *elder* or *younger* brother or sister.
+Fill in **Birth order** or **Birth year** so siblings appear eldest-first.
