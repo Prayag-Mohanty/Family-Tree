@@ -28,11 +28,30 @@ To put it online, enable **GitHub Pages** for this repo (Settings → Pages → 
 
 ## Where the data lives
 
-Edits are saved in the browser's local storage, so each device and browser keeps its own copy.
-To move the tree to another device, use **⋯ → Export backup**, then **Import backup** on the other device.
+Without sharing set up, edits are saved only in the browser you made them in. Use **⋯ → Export backup** to keep a copy, or to move the tree to another device with **Import backup**.
 
-Optional: if you commit an exported file as `family.json` next to `index.html`, a fresh browser loads it automatically.
-Only do this in a **private** repo, because it contains names, phone numbers and photos.
+With sharing set up (below), the tree lives in your own free Firebase database, and everyone with the family passcode sees and edits the same tree live.
+
+## Sharing with family
+
+**Privacy:**
+- The family data can only be reached with the passcode. It is stretched into a long secret id that is the tree's only address, and the database rules forbid listing trees. Nothing is findable or searchable without it.
+- Invite links carry the passcode after `#`, which browsers never send to any server. The site removes it from the address bar after opening.
+- The site tells search engines not to index it (`noindex`). A visitor without the passcode only sees a "family passcode" screen, with no names.
+- Anyone who has the passcode can view and edit, so share it only with family. Pick a long one, e.g. four random words.
+
+**One-time setup (about 10 minutes, free):**
+
+1. Go to <https://console.firebase.google.com> and sign in with a Google account, then click **Create a project**. Any name works (e.g. `our-family-tree`). You can turn Google Analytics off.
+2. In the left menu open **Build → Firestore Database → Create database**. Choose a location near you (e.g. `asia-south1 (Mumbai)`), then **Start in production mode**.
+3. Open the **Rules** tab, replace everything with the contents of [`firestore.rules`](firestore.rules), and click **Publish**.
+4. Click the gear icon, then **Project settings → General → Your apps**. Click the **`</>`** (Web) icon, give it any nickname, and click **Register app**. Leave Firebase Hosting unticked.
+5. Copy the `firebaseConfig = { … }` values it shows into [`config.js`](config.js), replacing `firebase: null`. These values are not secret. Commit the change, or send them to whoever maintains the site.
+6. Make sure GitHub Pages serves the branch with these files (Settings → Pages).
+7. Open the site in the browser that has your tree, click **Share**, choose a passcode and click **Open**. Then choose **Upload my tree … and share it**.
+8. Copy the invite link, or tap **Send on WhatsApp**, and send it to family. They open it and see the tree. The passcode is remembered on their device, so they can add and edit people straight away.
+
+The free Firebase plan (50,000 reads and 20,000 writes a day) is far more than a family needs. Export a backup now and then from the ⋯ menu, in case someone deletes something by mistake.
 
 ## Starter tree
 

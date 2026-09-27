@@ -121,9 +121,14 @@
     $('#redoBtn').title = redoStack.length ? `Redo ${redoStack[redoStack.length - 1].label} (Ctrl+Shift+Z)` : 'Redo (Ctrl+Shift+Z)';
   }
 
-  function save() {
+  function saveLocal() {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
     catch { toast('Could not save — browser storage may be full (try smaller photos).'); }
+  }
+  // Every change goes through here: kept in this browser, and sent to the shared tree when there is one.
+  function save() {
+    saveLocal();
+    pushChanges();
   }
   function saveUI() {
     try { localStorage.setItem(UI_KEY, JSON.stringify({ collapsed: [...collapsed], scopeId, meId, bannerClosed: $('#banner').dataset.closed === '1' })); } catch { /* ignore */ }
@@ -144,10 +149,10 @@
     // A family.json committed next to index.html seeds a fresh browser.
     try {
       const res = await fetch('family.json', { cache: 'no-store' });
-      if (res.ok) { state = normalize(await res.json()); save(); return; }
+      if (res.ok) { state = normalize(await res.json()); saveLocal(); return; }
     } catch { /* ignore */ }
     state = starterTree();
-    save();
+    saveLocal();
   }
 
   const P = (id) => state.people[id];
@@ -1344,6 +1349,275 @@
     }
   });
 
+  // ============================================================ sharing
+  //
+  // Optional live sharing through a Firebase Firestore database (see
+  // config.js and the README). Everyone who knows the family passcode
+  // reads and edits the same tree. The passcode is stretched with PBKDF2
+  // into the tree's id, which is the only address of the data: the
+  // database rules forbid listing trees, so without the passcode there is
+  // nothing to find. Invite links carry the passcode after '#', which
+  // browsers never send to any server.
+
+  const CFG = window.FAMILY_TREE_CONFIG || {};
+  const SHARE_KEY = 'familyTree.share';
+  const FIREBASE_VERSION = '10.12.2';
+  const sync = {
+    status: 'local',         // local | connecting | live | error
+    fs: null, db: null, treeId: null, passcode: null,
+    base: null,              // last state known to be in the database: { people: {id: json}, terms: json }
+    unsub: [], first: true, remote: { people: null, meta: null }, error: '',
+  };
+  const sharingSetUp = () => !!(CFG.firebase && CFG.firebase.projectId);
+
+  async function deriveTreeId(passcode) {
+    const norm = passcode.trim().toLowerCase().replace(/\s+/g, ' ');
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey('raw', enc.encode(norm), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', salt: enc.encode('family-tree:' + CFG.firebase.projectId), iterations: 150000, hash: 'SHA-256' }, key, 192);
+    return [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function loadFirebase() {
+    if (sync.fs) return sync.fs;
+    const base = `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}`;
+    const appMod = await import(`${base}/firebase-app.js`);
+    const fs = await import(`${base}/firebase-firestore.js`);
+    const app = appMod.initializeApp(CFG.firebase);
+    try { sync.db = fs.initializeFirestore(app, { localCache: fs.persistentLocalCache() }); }   // works offline too
+    catch { sync.db = fs.getFirestore(app); }
+    sync.fs = fs;
+    return fs;
+  }
+
+  function setStatus(status, error = '') {
+    sync.status = status;
+    sync.error = error;
+    const pill = $('#syncPill');
+    if (pill) {
+      const text = { local: sharingSetUp() ? 'Only on this device' : '', connecting: 'Connecting…', live: navigator.onLine ? 'Shared · live' : 'Offline · will sync', error: 'Sharing error' }[status];
+      pill.hidden = !text;
+      pill.dataset.status = status;
+      pill.innerHTML = `<span class="dot"></span>${esc(text)}`;
+    }
+    $('[data-menu="reset"]').hidden = status === 'live';
+    if ($('#shareDialog').open) drawShare();
+  }
+  addEventListener('online', () => sync.status === 'live' && setStatus('live'));
+  addEventListener('offline', () => sync.status === 'live' && setStatus('live'));
+
+  const refs = () => ({
+    meta: sync.fs.doc(sync.db, 'trees', sync.treeId),
+    people: sync.fs.collection(sync.db, 'trees', sync.treeId, 'people'),
+  });
+
+  // Open the tree for a passcode. Returns 'live', or 'empty' when no tree uses it yet.
+  async function connect(passcode) {
+    setStatus('connecting');
+    try {
+      const fs = await loadFirebase();
+      sync.treeId = await deriveTreeId(passcode);
+      const r = refs();
+      const [meta, people] = await Promise.all([fs.getDoc(r.meta), fs.getDocs(r.people)]);
+      if (!meta.exists() && people.empty) { setStatus('local'); return 'empty'; }
+      startLive(passcode);
+      return 'live';
+    } catch (err) {
+      console.error(err);
+      setStatus('error', err?.code === 'permission-denied' ? 'The database refused access. Check the database rules (see README).' : 'Could not reach the shared tree. Check your connection and try again.');
+      return 'error';
+    }
+  }
+
+  function startLive(passcode) {
+    sync.passcode = passcode;
+    sync.first = true;
+    sync.remote = { people: null, meta: null };
+    try { localStorage.setItem(SHARE_KEY, JSON.stringify({ passcode })); } catch { /* ignore */ }
+    const r = refs();
+    sync.unsub.push(sync.fs.onSnapshot(r.meta, (s) => { sync.remote.meta = s.exists() ? s.data() : {}; applyRemote(); }, onSyncError));
+    sync.unsub.push(sync.fs.onSnapshot(r.people, (s) => {
+      sync.remote.people = Object.fromEntries(s.docs.map((d) => [d.id, d.data()]));
+      applyRemote();
+    }, onSyncError));
+    setStatus('live');
+  }
+  function onSyncError(err) { console.error(err); setStatus('error', 'Lost the connection to the shared tree. Reload the page to try again.'); }
+
+  function stopLive() {
+    sync.unsub.forEach((u) => u());
+    sync.unsub = [];
+    sync.base = null;
+    sync.passcode = null;
+    try { localStorage.removeItem(SHARE_KEY); } catch { /* ignore */ }
+    setStatus('local');
+  }
+
+  const snapshotOf = (s) => ({
+    people: Object.fromEntries(Object.entries(s.people).map(([id, p]) => [id, JSON.stringify(p)])),
+    terms: JSON.stringify(s.terms || {}),
+  });
+
+  // Someone (maybe us) changed the database: show it.
+  function applyRemote() {
+    if (!sync.remote.people || !sync.remote.meta) return;
+    const next = normalize({ people: sync.remote.people, terms: sync.remote.meta.terms || {} });
+    const changedByOthers = JSON.stringify(next) !== JSON.stringify(state);
+    sync.base = snapshotOf(next);
+    if (changedByOthers) {
+      state = next;
+      // Undo history no longer matches what everyone sees.
+      if (!sync.first) { undoStack.length = 0; redoStack.length = 0; }
+      saveLocal();
+      render();
+      if (selectedId) P(selectedId) ? renderPanel() : closePanel();
+      if (relDlg.open) drawRelations();
+    }
+    if (sync.first) { sync.first = false; fit(false, 0.5); }
+  }
+
+  // We changed something: write only what differs from the database.
+  async function pushChanges() {
+    if (sync.status !== 'live' || !sync.base) return;
+    const now = snapshotOf(state);
+    const ops = [];
+    for (const [id, j] of Object.entries(now.people)) if (sync.base.people[id] !== j) ops.push(['set', id]);
+    for (const id of Object.keys(sync.base.people)) if (!(id in now.people)) ops.push(['delete', id]);
+    const termsChanged = now.terms !== sync.base.terms;
+    if (!ops.length && !termsChanged) return;
+    sync.base = now;
+    const fs = sync.fs, r = refs();
+    try {
+      for (let i = 0; i < Math.max(ops.length, 1); i += 400) {
+        const batch = fs.writeBatch(sync.db);
+        for (const [op, id] of ops.slice(i, i + 400)) {
+          const ref = fs.doc(r.people, id);
+          op === 'set' ? batch.set(ref, state.people[id]) : batch.delete(ref);
+        }
+        if (i === 0) batch.set(r.meta, { terms: state.terms || {}, updatedAt: fs.serverTimestamp() }, { merge: true });
+        await batch.commit();
+      }
+    } catch (err) { onSyncError(err); }
+  }
+
+  // First upload of this browser's tree under a new passcode.
+  async function uploadAndShare(passcode) {
+    setStatus('connecting');
+    try {
+      await loadFirebase();
+      sync.treeId = await deriveTreeId(passcode);
+      sync.base = { people: {}, terms: '' };
+      sync.status = 'live';
+      await pushChanges();
+      await sync.fs.setDoc(refs().meta, { createdAt: sync.fs.serverTimestamp() }, { merge: true });
+      sync.base = null;
+      startLive(passcode);
+      return true;
+    } catch (err) {
+      console.error(err);
+      setStatus('error', 'Upload failed. Check your connection and the database rules, then try again.');
+      return false;
+    }
+  }
+
+  // ------------------------------------------------------ share dialog
+
+  const shareDlg = $('#shareDialog');
+  let shareStep = null;      // null | { empty: passcode }
+
+  const inviteLink = () => `${location.origin}${location.pathname}#join=${encodeURIComponent(sync.passcode)}`;
+  const hasOwnData = () => realPeople().some((p) => !isPlaceholder(p));
+
+  function drawShare() {
+    const body = $('#shareBody');
+    if (!sharingSetUp()) {
+      body.innerHTML = `<p>Sharing isn’t switched on for this site yet. It needs a free Firebase database. The steps are in the README under <em>Sharing with family</em>, and take about ten minutes.</p>
+        <p class="muted">Until then, your tree lives only in this browser. Use ⋯ → Export backup to keep a copy.</p>`;
+      return;
+    }
+    if (sync.status === 'live') {
+      const link = inviteLink();
+      const msg = `Our family tree: ${link}`;
+      body.innerHTML = `<p class="share-live"><span class="dot"></span> Shared with your family. Changes anyone makes show up for everyone straight away.</p>
+        <div class="f">Invite link (includes the passcode)
+          <div class="copy-row"><input class="pk-input" id="inviteLink" readonly value="${esc(link)}"><button class="btn" id="copyInvite">Copy</button></div>
+        </div>
+        <div class="share-actions">
+          <a class="btn" href="https://wa.me/?text=${encodeURIComponent(msg)}" target="_blank" rel="noopener">Send on WhatsApp</a>
+          <button class="btn ghost danger" id="leaveShare">Stop using the shared tree on this device</button>
+        </div>
+        <p class="muted">Anyone with this link or the passcode can see and edit the tree, so send it only to family. It isn’t listed anywhere and search engines are told not to index this site. Export a backup now and then (⋯ menu), just in case.</p>`;
+      $('#copyInvite').onclick = async () => {
+        try { await navigator.clipboard.writeText(link); toast('Invite link copied'); }
+        catch { $('#inviteLink').select(); toast('Press Ctrl+C to copy'); }
+      };
+      $('#leaveShare').onclick = () => {
+        if (!confirm('Stop showing the shared tree on this device? The shared tree stays online for everyone else, and this browser keeps a copy.')) return;
+        stopLive(); drawShare(); toast('This device is no longer connected');
+      };
+      return;
+    }
+    if (shareStep?.empty) {
+      const n = realPeople().length;
+      body.innerHTML = `<p>No family tree uses that passcode yet.</p>
+        <p class="muted">If a relative sent you the passcode, check it was typed exactly and try again. If you’re setting up sharing for the first time, upload the tree from this browser.</p>
+        <div class="share-actions">
+          <button class="btn" id="shareRetry">Try another passcode</button>
+          ${hasOwnData() ? `<button class="btn primary" id="shareUpload">Upload my tree (${n} people) and share it</button>` : ''}
+        </div>`;
+      $('#shareRetry').onclick = () => { shareStep = null; drawShare(); };
+      $('#shareUpload')?.addEventListener('click', async () => {
+        const ok = await uploadAndShare(shareStep.empty);
+        if (ok) { shareStep = null; drawShare(); toast('Your tree is now shared'); }
+      });
+      return;
+    }
+    body.innerHTML = `<p>Enter your family passcode to open the shared tree.</p>
+      <form id="joinForm" class="join-row">
+        <input class="pk-input" id="joinCode" type="password" autocomplete="off" placeholder="Family passcode" required>
+        <button class="btn primary" type="submit">${sync.status === 'connecting' ? 'Opening…' : 'Open'}</button>
+      </form>
+      ${sync.status === 'error' ? `<p class="share-error">${esc(sync.error)}</p>` : ''}
+      <p class="muted">Setting it up for the first time? Choose a long passcode that’s easy to say out loud, like four random words (“mango river silver kite”). Anyone who knows it can see and edit the tree.</p>`;
+    $('#joinForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const code = $('#joinCode').value;
+      if (code.trim().length < 8) { toast('Use at least 8 characters, e.g. a few words'); return; }
+      const res = await connect(code);
+      if (res === 'empty') shareStep = { empty: code };
+      drawShare();
+      if (res === 'live') { shareDlg.close(); toast('Opened the shared family tree'); }
+    };
+    setTimeout(() => $('#joinCode')?.focus(), 30);
+  }
+
+  function openShare() { shareStep = null; drawShare(); if (!shareDlg.open) shareDlg.showModal(); }
+  $('#shareClose').onclick = () => shareDlg.close();
+  shareDlg.addEventListener('click', (e) => { if (e.target === shareDlg) shareDlg.close(); });
+
+  // Start sharing on load: an invite link (#join=…) or a remembered passcode.
+  async function startSharing() {
+    if (!sharingSetUp()) { setStatus('local'); return; }
+    let code = null;
+    const m = location.hash.match(/(?:^#|&)join=([^&]+)/);
+    if (m) {
+      code = decodeURIComponent(m[1]);
+      history.replaceState(null, '', location.pathname + location.search);   // keep the passcode out of the address bar
+    } else {
+      try { code = JSON.parse(localStorage.getItem(SHARE_KEY) || 'null')?.passcode || null; } catch { /* ignore */ }
+    }
+    if (!code) {
+      setStatus('local');
+      if (!hasOwnData()) openShare();      // a visitor without the passcode sees no family data
+      return;
+    }
+    const res = await connect(code);
+    if (res === 'empty') { shareStep = { empty: code }; drawShare(); shareDlg.showModal(); }
+    else if (res === 'error') openShare();
+  }
+
+
   // ================================================================ menu
 
   $('#addPersonBtn').onclick = () => openEditor(null);
@@ -1384,7 +1658,7 @@
     if (!f) return;
     try {
       const data = normalize(JSON.parse(await f.text()));
-      if (!confirm(`Replace the current tree (${all().length} people) with this file (${Object.keys(data.people).length} people)?`)) return;
+      if (!confirm(`Replace the current tree (${realPeople().length} people) with this file (${Object.values(data.people).filter((p) => !p.unknown).length} people)?` + (sync.status === 'live' ? '\n\nThis is the shared tree, so it changes for everyone in the family.' : ''))) return;
       remember('import'); state = data; collapsed.clear(); scopeId = null; closePanel(); save(); saveUI(); render(); fit();
       toast('Imported ' + f.name);
     } catch { toast('That file is not a valid family tree backup.'); }
@@ -1415,9 +1689,13 @@
   }
 
   // ================================================================ boot
+  $('#shareBtn').onclick = openShare;
+  $('#syncPill').onclick = openShare;
+
   (async () => {
     await load();
     render();
     fit(false, 0.5);
+    startSharing();
   })();
 })();

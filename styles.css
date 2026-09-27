@@ -413,3 +413,30 @@ dialog::backdrop { background: rgba(255, 255, 255, .12); -webkit-backdrop-filter
 .card.unknown .nm { font-weight: 500; font-style: italic; color: var(--muted); }
 .card.unknown .sub { color: var(--faint); }
 #siblingsField[hidden] { display: none; }
+
+/* ---------- sharing ---------- */
+.hud-wrap { position: fixed; z-index: 10; left: 12px; bottom: 12px; display: flex; gap: 8px; align-items: stretch; }
+.hud-wrap .hud { position: static; }
+.sync-pill {
+  display: inline-flex; align-items: center; gap: 8px; padding: 0 12px; border-radius: 8px; cursor: pointer;
+  font: 500 14.5px var(--font); color: var(--muted);
+}
+.sync-pill[hidden] { display: none; }
+.sync-pill .dot, .share-live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); display: inline-block; }
+.sync-pill[data-status="live"] .dot, .share-live .dot { background: var(--gold); box-shadow: 0 0 0 3px rgba(168, 138, 74, .18); }
+.sync-pill[data-status="error"] { color: var(--danger); }
+#shareDialog { width: min(560px, calc(100vw - 24px)); }
+.share-body { display: flex; flex-direction: column; gap: 12px; font-size: 17px; }
+.share-body p { margin: 0; }
+.share-body .muted { font-size: 15px; }
+.join-row, .copy-row { display: flex; gap: 8px; }
+.join-row .pk-input, .copy-row .pk-input { flex: 1; }
+.share-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.share-live { display: flex; align-items: center; gap: 10px; }
+.share-error { color: var(--danger); font-size: 15px; }
+a.btn { text-decoration: none; color: inherit; }
+@media (max-width: 760px) {
+  #shareBtn .lbl { display: none; }
+  #shareBtn { width: 38px; padding: 0; }
+  .hud-wrap { left: 8px; bottom: 8px; }
+}

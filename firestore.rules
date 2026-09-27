@@ -1,0 +1,16 @@
+rules_version = '2';
+// Paste these into Firebase console → Firestore Database → Rules → Publish.
+// A tree's id is derived from the family passcode. Nobody can list the
+// trees, so the data can only be reached by someone who knows the passcode.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /trees/{treeId} {
+      allow get, create, update: if treeId.size() >= 40;
+      allow list, delete: if false;
+
+      match /people/{personId} {
+        allow read, write: if treeId.size() >= 40;
+      }
+    }
+  }
+}
