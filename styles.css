@@ -440,3 +440,6 @@ a.btn { text-decoration: none; color: inherit; }
   #shareBtn { width: 38px; padding: 0; }
   .hud-wrap { left: 8px; bottom: 8px; }
 }
+
+.rel-link { margin: -4px auto 0; max-width: 620px; text-align: center; font-size: 16px; color: var(--muted); font-style: italic; }
+.rel-link b, .rel-link em { color: var(--text); font-style: normal; }

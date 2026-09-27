@@ -89,7 +89,7 @@
     }
     const terms = {};
     for (const [k, v] of Object.entries(data.terms || {})) {
-      if (v && typeof v === 'object') terms[String(k).toLowerCase()] = { hi: v.hi == null ? null : String(v.hi), or: v.or == null ? null : String(v.or) };
+      if (v && typeof v === 'object') terms[String(k).includes('>') ? String(k) : String(k).toLowerCase()] = { hi: v.hi == null ? null : String(v.hi), or: v.or == null ? null : String(v.or) };
     }
     return { people, terms };
   }
@@ -258,18 +258,32 @@
     const ids = Object.keys(people);
     const list = Object.values(people);
 
-    // --- generations: child = parent + 1, spouses share a generation
-    const gen = Object.fromEntries(ids.map((i) => [i, 0]));
+    // --- generations: child = parent + 1, spouses share a generation.
+    // Walk each connected family once so that everyone lines up across both
+    // sides (e.g. both sets of grandparents), whatever is added above them.
+    const gen = {};
     const kids = Object.fromEntries(ids.map((i) => [i, []]));
     for (const p of list) for (const x of p.parents) kids[x].push(p.id);
+    for (const start of ids) {
+      if (start in gen) continue;
+      gen[start] = 0;
+      const comp = [start], queue = [start];
+      while (queue.length) {
+        const x = queue.shift(), p = people[x];
+        const next = [...p.parents.map((y) => [y, -1]), ...kids[x].map((y) => [y, 1]), ...p.spouses.map((y) => [y, 0])];
+        for (const [y, d] of next) if (!(y in gen)) { gen[y] = gen[x] + d; comp.push(y); queue.push(y); }
+      }
+      const top = Math.min(...comp.map((y) => gen[y]));
+      comp.forEach((y) => { gen[y] -= top; });
+    }
+    // Unusual marriages (across generations) can break the rules above; repair them.
     for (let iter = 0; iter < ids.length + 2; iter++) {
       let changed = false;
       for (const id of ids) {
         const p = people[id];
         let g = gen[id];
         for (const x of p.parents) g = Math.max(g, gen[x] + 1);
-        for (const s of p.spouses) g = Math.max(g, gen[s]);
-        if (!p.parents.length && kids[id].length) g = Math.max(g, Math.min(...kids[id].map((k) => gen[k])) - 1);
+        for (const sp of p.spouses) g = Math.max(g, gen[sp]);
         if (g !== gen[id]) { gen[id] = g; changed = true; }
       }
       if (!changed) break;
@@ -1218,7 +1232,7 @@
     const A = P(a), B = P(b);
     if (A.spouses.includes(b)) return { phrase: sw(b), hi: 'by name', or: 'by name' };
     const bl = blood(a, b);
-    if (bl) return { phrase: bloodPhrase(bl), ...pair(bloodTerms(a, b, bl)), n: bl.k + bl.j };
+    if (bl) return { phrase: bloodPhrase(bl), ...pair(bloodTerms(a, b, bl)), n: bl.k + bl.j, role: roleOfBlood(a, b, bl), blood: true };
 
     let best = null;
     for (const x of B.spouses) {                      // spouse of a blood relative
@@ -1229,12 +1243,15 @@
       const r = blood(s, b);
       if (r && (!best || r.k + r.j + 1 < best.n)) best = { n: r.k + r.j + 1, kind: 'in', x: s, r };
     }
-    if (best?.kind === 'sp') return { phrase: `${bloodPhrase(best.r)}'s ${sw(b)}`, ...pair(spouseOfBloodTerms(a, b, best.x, best.r)), n: best.n };
+    if (best?.kind === 'sp') {
+      const xr = roleOfBlood(a, best.x, best.r);
+      return { phrase: `${bloodPhrase(best.r)}'s ${sw(b)}`, ...pair(spouseOfBloodTerms(a, b, best.x, best.r)), n: best.n, role: { ...xr, g: G(b), married: !xr.married } };
+    }
     if (best?.kind === 'in') {
       const s = best.x;
       const t = spousesRelativeTerms(a, b, s, best.r);
       const phrase = `${sw(s)}'s ${bloodPhrase(best.r)}`;
-      if (t) return { phrase, ...pair(t), n: best.n };
+      if (t) return { phrase, ...pair(t), n: best.n, role: { gen: best.r.k - best.r.j, side: 's', g: G(b), married: false, age: '' } };
       const via = relate(s, b, depth + 1);
       return { phrase, hi: via.hi, or: via.or, via: P(s).name, n: best.n };
     }
@@ -1248,10 +1265,212 @@
   }
   const pair = ([hi, or]) => ({ hi, or });
 
+  // ---- naming relatives of relatives
+  //
+  // Families name people who aren't directly related through a common link:
+  // Bada Mama's brothers are Mamus too, his wife is Maain, her sister is a
+  // Mausi, their children are Bhai and Apa. A "role" captures the position
+  // someone holds for you:
+  //   gen     generations above you (1 = your parents' level, 0 = yours)
+  //   side    'p' father's side, 'm' mother's side, 's' spouse's side, '' unknown
+  //   g       'm' | 'f' | ''
+  //   married they married into that position (Chachi, Mami, Fufa, Mausa, Bhabhi, Jija)
+  //   age     'e' elder / 'y' younger: than you at your level, than your parent at theirs
+
+  const ageOf = (o) => (o === true ? 'e' : o === false ? 'y' : '');
+  function roleOfBlood(a, b, { ca, k, j }) {
+    const gen = k - j;
+    return {
+      gen, g: G(b), married: false,
+      side: gen >= 1 && k >= 1 ? ({ m: 'p', f: 'm' }[G(ca[1])] || '') : '',
+      age: gen === 0 ? ageOf(older(b, a)) : gen === 1 && k >= 2 ? ageOf(older(b, ca[1])) : '',
+    };
+  }
+
+  // What you call someone, from their role.
+  function termsFromRole(r) {
+    const both = (m, f) => (r.g === 'm' ? m : r.g === 'f' ? f : [`${m[0]} / ${f[0]}`, m[1] && f[1] ? `${m[1]} / ${f[1]}` : null]);
+    const byAge = (e, y) => (r.age === 'e' ? e : r.age === 'y' ? y : [`${e[0]} (if elder) or ${y[0]}`, `${e[1]} (if elder) or ${y[1]}`]);
+    const side = r.side === 's' ? 'p' : r.side;
+    if (r.gen >= 3) return both(['Pardada ji / Parnana ji', null], ['Pardadi ji / Parnani ji', null]);
+    if (r.gen === 2) {
+      if (side === 'p') return both(['Dada ji', 'Jeje'], ['Dadi ji', 'Jejemaa']);
+      if (side === 'm') return both(['Nana ji', 'Aja'], ['Nani ji', 'Aai']);
+      return both(['Dada ji / Nana ji', 'Jeje / Aja'], ['Dadi ji / Nani ji', 'Jejemaa / Aai']);
+    }
+    if (r.gen === 1) {
+      if (side === 'p') {
+        if (r.married) return both(['Fufa ji', 'Piusa'], byAge(['Tai ji', 'Bada Maa'], ['Chachi ji', 'Khudi']));
+        return both(byAge(['Tau ji', 'Bada Bapa'], ['Chacha ji', 'Dada']), ['Bua ji', 'Piusi']);
+      }
+      if (side === 'm') return r.married ? both(['Mausa ji', 'Mausa'], ['Mami ji', 'Maain']) : both(['Mama ji', 'Mamu'], ['Mausi', 'Mausi']);
+      return both(['Chacha ji / Mama ji (depends on the side)', 'Dada / Mamu'], ['Chachi ji / Mausi (depends on the side)', 'Khudi / Mausi']);
+    }
+    if (r.gen === 0) {
+      if (r.married) return both(['Jija ji', 'Bhinoi'], ['Bhabhi', 'Bhauja']);
+      return both(r.age === 'y' ? ['by name', 'by name'] : r.age === 'e' ? ['Bhaiya', 'Bhai / Bhaina'] : ['Bhaiya (if elder), else by name', 'Bhai (if elder), else by name'],
+        r.age === 'y' ? ['by name', 'by name'] : r.age === 'e' ? ['Didi', 'Apa / Nani'] : ['Didi (if elder), else by name', 'Apa (if elder), else by name']);
+    }
+    return ['by name', 'by name'];
+  }
+
+  // Read a role back from a term, so family-edited names (e.g. "Bada Mama") drive the naming.
+  const TERM_ROLES = [
+    // [pattern, lang, role]
+    [/\bpar(dada|dadi|nana|nani)\b/, 'hi', (m) => ({ gen: 3, side: m[1].startsWith('d') ? 'p' : 'm', g: m[1].endsWith('i') ? 'f' : 'm' })],
+    [/\bdadi\b/, 'hi', { gen: 2, side: 'p', g: 'f' }], [/\bdada\b/, 'hi', { gen: 2, side: 'p', g: 'm' }],
+    [/\bnani\b/, 'hi', { gen: 2, side: 'm', g: 'f' }], [/\bnana\b/, 'hi', { gen: 2, side: 'm', g: 'm' }],
+    [/\bjejema+\b/, 'or', { gen: 2, side: 'p', g: 'f' }], [/\bjeje(bapa)?\b/, 'or', { gen: 2, side: 'p', g: 'm' }],
+    [/\baai\b/, 'or', { gen: 2, side: 'm', g: 'f' }], [/\baja\b/, 'or', { gen: 2, side: 'm', g: 'm' }],
+    [/\b(tau|taya|bade papa|bada ?bapa)\b/, '*', { gen: 1, side: 'p', g: 'm', age: 'e' }],
+    [/\b(tai|badi ma+|bada ?ma+)\b/, '*', { gen: 1, side: 'p', g: 'f', married: true, age: 'e' }],
+    [/\b(chachi|kaki|khudi|khuri)\b/, '*', { gen: 1, side: 'p', g: 'f', married: true, age: 'y' }],
+    [/\b(chacha|chachu|kaka)\b/, '*', { gen: 1, side: 'p', g: 'm', age: 'y' }],
+    [/\bdada\b/, 'or', { gen: 1, side: 'p', g: 'm', age: 'y' }],
+    [/\b(bua|buaa|phua|piusi|pishi)\b/, '*', { gen: 1, side: 'p', g: 'f' }],
+    [/\b(fufa|phupha|piusa|pisa)\b/, '*', { gen: 1, side: 'p', g: 'm', married: true }],
+    [/\b(mami|maain|main|mai)\b/, '*', { gen: 1, side: 'm', g: 'f', married: true }],
+    [/\b(mama|mamu|mamoo)\b/, '*', { gen: 1, side: 'm', g: 'm' }],
+    [/\b(mausa|mousa|masa)\b/, '*', { gen: 1, side: 'm', g: 'm', married: true }],
+    [/\b(mausi|mousi|masi)\b/, '*', { gen: 1, side: 'm', g: 'f' }],
+    [/\b(bhabhi|bhauja|bhouja)\b/, '*', { gen: 0, g: 'f', married: true, age: 'e' }],
+    [/\b(jija|jiju|bhinoi)\b/, '*', { gen: 0, g: 'm', married: true, age: 'e' }],
+    [/\b(bhaiya|bhaina|bhai)\b/, '*', { gen: 0, g: 'm', age: 'e' }],
+    [/\b(didi|apa|nani)\b/, 'or', { gen: 0, g: 'f', age: 'e' }],
+    [/\bdidi\b/, 'hi', { gen: 0, g: 'f', age: 'e' }],
+  ];
+  function roleFromTerms(hi, or) {
+    for (const [lang, text] of [['hi', hi], ['or', or]]) {
+      const t = String(text || '').toLowerCase();
+      if (!t || t.startsWith('by name')) continue;
+      for (const [re, l, role] of TERM_ROLES) {
+        if (l !== '*' && l !== lang) continue;
+        const m = t.match(re);
+        if (m) return { side: '', married: false, age: '', ...(typeof role === 'function' ? role(m) : role) };
+      }
+    }
+    return null;
+  }
+
+  // One step along the family from someone with role r to their relative `to`.
+  function stepRole(r, type, to, a) {
+    const g = G(to);
+    if (type === 'spouse') return { ...r, g, married: !r.married };
+    if (type === 'sibling') {
+      // A married-in person's brothers and sisters are named the way that
+      // person's own children name them (Chachi's brother → Mama).
+      if (r.married) return { gen: r.gen, side: r.g === 'f' ? 'm' : 'p', g, married: false, age: '' };
+      return { ...r, g, age: r.gen === 0 ? ageOf(older(to, a)) : '' };
+    }
+    if (type === 'child') return { gen: r.gen - 1, side: r.gen - 1 >= 1 ? r.side : '', g, married: false, age: r.gen - 1 === 0 ? ageOf(older(to, a)) : '' };
+    if (type === 'parent') return { gen: r.gen + 1, side: r.gen >= 1 ? r.side : '', g, married: false, age: '' };
+    return r;
+  }
+
+  // Shortest path a → b over parent / child / spouse links, with "parent then
+  // their other child" folded into a sibling step.
+  function kinPath(a, b) {
+    const kidsOf = new Map();
+    for (const p of all()) for (const x of p.parents) { if (!kidsOf.has(x)) kidsOf.set(x, []); kidsOf.get(x).push(p.id); }
+    const prev = new Map([[a, null]]);
+    const q = [a];
+    while (q.length) {
+      const x = q.shift();
+      if (x === b) break;
+      const p = P(x);
+      const nb = [...p.parents.map((y) => ['parent', y]), ...(kidsOf.get(x) || []).map((y) => ['child', y]), ...p.spouses.map((y) => ['spouse', y])];
+      for (const [t, y] of nb) if (!prev.has(y)) { prev.set(y, { from: x, t }); q.push(y); }
+    }
+    if (!prev.has(b)) return null;
+    const raw = [];
+    for (let c = b; c !== a;) { const s = prev.get(c); raw.unshift({ t: s.t, from: s.from, to: c }); c = s.from; }
+    const steps = [];
+    for (let i = 0; i < raw.length; i++) {
+      const s = raw[i], n = raw[i + 1];
+      if (s.t === 'parent' && n && n.t === 'child' && n.to !== s.from) { steps.push({ t: 'sibling', from: s.from, to: n.to }); i++; }
+      else steps.push(s);
+    }
+    return steps;
+  }
+  const stepWord = (s) => (s.t === 'parent' ? pw(s.to) : s.t === 'child' ? cw(s.to) : s.t === 'spouse' ? sw(s.to) : sibw(s.to, s.from));
+
+  // Name someone through the nearest relative on the way whom you already have a name for.
+  // customOnly: use only a link whose name the family has edited (e.g. "Bada Mama").
+  // sameGenOnly: accept the link only if b is its brother, sister or spouse (or theirs).
+  function relateThroughLink(a, b, customOnly = false, sameGenOnly = false) {
+    const steps = kinPath(a, b);
+    if (!steps || !steps.length) return null;
+    const phrase = steps.filter((s) => !P(s.to).unknown || s === steps[steps.length - 1]).map(stepWord).join("'s ");
+    for (let i = steps.length - 2; i >= 0; i--) {
+      const x = steps[i].to;
+      if (P(x).unknown) continue;
+      const r = termsFor(a, x, false);
+      if (r.none || (customOnly && !r.custom)) continue;
+      if (sameGenOnly && steps.slice(i + 1).some((s) => s.t === 'parent' || s.t === 'child')) continue;
+      let role = (r.custom && roleFromTerms(r.hi, r.or)) || r.role || roleFromTerms(r.hi, r.or);
+      if (!role) continue;
+      for (const s of steps.slice(i + 1)) role = stepRole(role, s.t, s.to, a);
+      const rest = steps.slice(i + 1).map(stepWord).join("'s ");
+      const linkTerm = [r.hi, r.or].filter((t) => t && !t.startsWith('by name'))[0];
+      return {
+        phrase, ...pair(termsFromRole(role)), role, n: steps.length + 5, derived: true,
+        link: { id: x, term: linkTerm || null, rest },
+      };
+    }
+    return customOnly ? null : { phrase, hi: null, or: null, n: steps.length + 5, derived: true };
+  }
+
   // Family-specific corrections, keyed by the English relationship.
-  function termsFor(a, b) {
-    const r = relate(a, b);
-    const o = r.phrase && state.terms?.[r.phrase.toLowerCase()];
+  // Edits are kept per pair of people ("a>b") or for everyone in a position (the English phrase).
+  function customTerm(a, b, phrase) {
+    return state.terms?.[`${a}>${b}`] || (phrase && state.terms?.[phrase.toLowerCase()]) || null;
+  }
+  // Someone's brothers, sisters and spouses (and theirs) share the name you use for
+  // any of them: if you call one of them "Bada Mama", the others follow from it.
+  function nearbyCustom(a, b) {
+    const seen = new Map([[b, null]]);
+    let frontier = [b];
+    for (let d = 0; d < 2; d++) {
+      const next = [];
+      for (const y of frontier) {
+        for (const [t, z] of [...siblingsOf(y).map((z) => ['sibling', z]), ...P(y).spouses.map((z) => ['spouse', z])]) {
+          if (seen.has(z) || z === a || P(z).unknown) continue;
+          seen.set(z, { from: y, t });
+          next.push(z);
+          const o = customTerm(a, z, relate(a, z).phrase);
+          const role0 = o && roleFromTerms(o.hi, o.or);
+          if (!role0) continue;
+          let role = role0, cur = z;
+          const words = [];
+          while (cur !== b) {
+            const st = seen.get(cur);
+            role = stepRole(role, st.t, st.from, a);
+            words.push(st.t === 'spouse' ? sw(st.from) : sibw(st.from, cur));
+            cur = st.from;
+          }
+          return { role, link: { id: z, term: o.hi || o.or, rest: words.join("'s ") } };
+        }
+      }
+      frontier = next;
+    }
+    return null;
+  }
+
+  function termsFor(a, b, viaLinks = true) {
+    let r = relate(a, b);
+    let o = customTerm(a, b, r.phrase);
+    const near = !o && viaLinks && a !== b && nearbyCustom(a, b);
+    if (near) {
+      const phrase = r.phrase || kinPath(a, b)?.map(stepWord).join("'s ") || null;
+      r = { ...r, phrase, none: false, ...pair(termsFromRole(near.role)), role: near.role, link: near.link, derived: true };
+    } else if (!o && viaLinks && a !== b) {
+      // A family-edited name on the way wins (Bada Mama → his brothers are Mamus, his wife is Maain).
+      // For blood relatives only across the same generation; a generation away the family structure decides.
+      const viaCustom = relateThroughLink(a, b, true, !!r.blood);
+      if (viaCustom) r = viaCustom;
+      else if (r.none) r = relateThroughLink(a, b) || r;
+      o = customTerm(a, b, r.phrase);
+    }
     return { ...r, hi: o?.hi ?? r.hi, or: o?.or ?? r.or, custom: !!o };
   }
 
@@ -1285,7 +1504,8 @@
         <div><span class="lang">Odia</span><span class="term">${termCell(r.or)}</span></div>
       </div>
       ${r.via ? `<div class="rc-via">The same as ${esc(r.via)} calls them.</div>` : ''}
-      <button type="button" class="link" data-edit-term="${esc(r.phrase)}" data-hi="${esc(r.hi || '')}" data-or="${esc(r.or || '')}">Edit${r.custom ? ' (edited)' : ''}</button>
+      ${r.link ? `<div class="rc-via">Named through ${esc(P(r.link.id).name)}${r.link.term && r.link.term !== P(r.link.id).name ? ` (${esc(r.link.term)})` : ''}.</div>` : ''}
+      <button type="button" class="link" data-edit-term="${esc(r.phrase)}" data-a="${esc(a)}" data-b="${esc(b)}" data-hi="${esc(r.hi || '')}" data-or="${esc(r.or || '')}">Edit${r.custom ? ' (edited)' : ''}</button>
     </div>`;
   }
 
@@ -1294,10 +1514,11 @@
     $('#relMe').checked = !!a && a === meId;
     let html = '';
     if (a && b) {
-      const r = relate(a, b);
+      const r = termsFor(a, b);
       if (r.none) html = `<div class="rel-sentence">No link was found between <b>${esc(P(a).name)}</b> and <b>${esc(P(b).name)}</b>. Add the missing parents or spouses to connect them.</div>`;
       else if (a === b) html = `<div class="rel-sentence">That’s the same person.</div>`;
       else html = `<div class="rel-sentence"><b>${esc(P(b).name)}</b> is <b>${esc(P(a).name)}</b>’s <em>${esc(r.phrase)}</em>.</div>
+        ${r.link ? `<p class="rel-link">${r.blood ? 'Named the same way as' : 'Not a direct relation, so they’re named through the common link,'} <b>${esc(P(r.link.id).name)}</b>${r.link.term ? `, whom ${esc(P(a).name.split(' ')[0])} calls <em>${esc(r.link.term)}</em>` : ''}. ${esc(P(b).name)} is ${esc(P(r.link.id).name)}’s ${esc(r.link.rest)}.</p>` : ''}
         <div class="rel-cards">${termBox(a, b)}${termBox(b, a)}</div>`;
     }
     $('#relResult').innerHTML = html;
@@ -1335,17 +1556,20 @@
     if (row) { openRelations(relPair[0], row.dataset.relB); relDlg.scrollTop = 0; return; }
     const ed = e.target.closest('[data-edit-term]');
     if (ed) {
-      const key = ed.dataset.editTerm.toLowerCase();
-      const hi = prompt(`Hindi term for “${ed.dataset.editTerm}”:`, ed.dataset.hi);
+      const { a, b } = ed.dataset;
+      const who = `${P(a).name.split(' ')[0]} calls ${P(b).name}`;
+      const hi = prompt(`What ${who} in Hindi:`, ed.dataset.hi);
       if (hi === null) return;
-      const or = prompt(`Odia term for “${ed.dataset.editTerm}”:`, ed.dataset.or);
+      const or = prompt(`What ${who} in Odia:`, ed.dataset.or);
       if (or === null) return;
+      const everyone = confirm(`Use this for everyone who is ${P(a).name.split(' ')[0]}’s “${ed.dataset.editTerm}”?\n\nOK: everyone in that position\nCancel: only ${P(b).name}`);
+      const key = everyone ? ed.dataset.editTerm.toLowerCase() : `${a}>${b}`;
       remember(`edit term “${ed.dataset.editTerm}”`);
       state.terms = state.terms || {};
-      if (!hi.trim() && !or.trim()) delete state.terms[key];
+      if (!hi.trim() && !or.trim()) { delete state.terms[key]; delete state.terms[`${a}>${b}`]; }
       else state.terms[key] = { hi: hi.trim() || null, or: or.trim() || null };
       save(); updateUndoButtons(); drawRelations();
-      toast('Term saved for every “' + ed.dataset.editTerm + '”');
+      toast(everyone ? `Saved for every “${ed.dataset.editTerm}”` : `Saved for ${P(b).name}`);
     }
   });
 
