@@ -1,8 +1,9 @@
-# 🌳 Family Tree
+# Family Tree
 
 One connected family tree for a large family. Find anyone, see who their parents and children are, and keep it up to date.
 
-- **One tree.** Both sides of the family sit in a single layout. People who married in are joined to their own parents by a dashed line.
+- **One tree.** Both sides of the family sit in a single layout. A daughter who married into another family is shown with her husband. She also appears among her own siblings as a dashed link card that jumps to her.
+- **One family at a time.** Use the **View** menu (e.g. just the maternal side), or click **Show only this family** in anyone's panel. This shows a couple, all their descendants and their spouses, including daughters who married out along with their husbands and children.
 - **Connectors.** Every person is linked to their parents and children. Click someone to highlight those links and open their details.
 - **Expand and collapse.** The small pill under each couple hides or shows their descendants (`+12` means 12 people are hidden).
 - **Find anyone.** Search by name, nickname, city or notes (press `/`). Picking a result opens any collapsed branches, flies to the person and highlights them.

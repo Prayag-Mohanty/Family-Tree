@@ -5,17 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Family Tree</title>
   <meta name="description" content="One connected family tree. Find anyone, see their parents and children, and edit as the family grows.">
+  <meta name="color-scheme" content="light">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌳</text></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div class="bg" aria-hidden="true">
-    <span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span><span class="blob b4"></span>
-  </div>
-
   <!-- Canvas -->
   <div id="viewport" class="viewport">
     <div id="world" class="world">
@@ -26,7 +23,11 @@
 
   <!-- Top bar -->
   <header class="topbar glass">
-    <div class="brand"><span class="logo">🌳</span><span class="brand-text">Family Tree</span></div>
+    <div class="brand"><span class="logo" aria-hidden="true">❦</span><span class="brand-text">Family Tree</span></div>
+    <label class="scope" id="scopeWrap" title="Show one family at a time">
+      <span class="scope-lbl">View</span>
+      <select id="scopeSelect" aria-label="Which family to show"></select>
+    </label>
     <div class="search" id="searchBox">
       <svg class="search-ic" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
       <input id="search" type="search" placeholder="Find anyone…  ( / )" autocomplete="off" spellcheck="false">
@@ -37,8 +38,8 @@
       <div class="menu-wrap">
         <button class="btn icon" id="menuBtn" aria-label="More">⋯</button>
         <div class="menu glass-strong" id="menu" hidden>
-          <button data-menu="expand">Expand everyone</button>
-          <button data-menu="collapse">Collapse everyone</button>
+          <button data-menu="expand">Expand all</button>
+          <button data-menu="collapse">Collapse all</button>
           <hr>
           <button data-menu="export">Export backup (JSON)</button>
           <label class="as-btn">Import backup<input type="file" id="importInput" accept="application/json,.json" hidden></label>

@@ -24,6 +24,7 @@
   let collapsed = new Set();     // anchor ids of couples whose children are hidden
   let L = null;                  // current layout
   let selectedId = null;
+  let scopeId = null;            // when set, only this person's family is shown
   const cam = { x: 0, y: 0, k: 1 };
 
   // ================================================================ data
@@ -93,13 +94,14 @@
     catch { toast('Could not save — browser storage may be full (try smaller photos).'); }
   }
   function saveUI() {
-    try { localStorage.setItem(UI_KEY, JSON.stringify({ collapsed: [...collapsed], bannerClosed: $('#banner').dataset.closed === '1' })); } catch { /* ignore */ }
+    try { localStorage.setItem(UI_KEY, JSON.stringify({ collapsed: [...collapsed], scopeId, bannerClosed: $('#banner').dataset.closed === '1' })); } catch { /* ignore */ }
   }
 
   async function load() {
     try {
       const ui = JSON.parse(localStorage.getItem(UI_KEY) || '{}');
       collapsed = new Set(ui.collapsed || []);
+      scopeId = ui.scopeId || null;
       if (ui.bannerClosed) $('#banner').dataset.closed = '1';
     } catch { /* ignore */ }
     try {
@@ -153,17 +155,34 @@
   //
   // People married to each other form a "unit" (a couple, or one person).
   // Every unit hangs under the unit of its anchor's parents, which turns the
-  // family graph into a tree we can lay out cleanly. An in-law whose own
-  // parents are elsewhere in the tree gets a dashed connector to them.
+  // family graph into a tree we can lay out cleanly. A spouse who is not the
+  // anchor (e.g. a daughter who married into another family) also appears as
+  // a small link card among her own siblings, so no family looks incomplete.
 
-  function computeLayout() {
-    const people = state.people;
+  // A family = a couple, all their descendants, and those descendants' spouses.
+  function familyOf(rootId) {
+    const blood = new Set([rootId, ...P(rootId).spouses]);
+    const kids = new Map();
+    for (const p of all()) for (const x of p.parents) { if (!kids.has(x)) kids.set(x, []); kids.get(x).push(p.id); }
+    const stack = [...blood];
+    while (stack.length) for (const c of kids.get(stack.pop()) || []) if (!blood.has(c)) { blood.add(c); stack.push(c); }
+    const set = new Set(blood);
+    for (const x of blood) P(x).spouses.forEach((s) => set.add(s));
+    return set;
+  }
+
+  function computeLayout(scope = null) {
+    // Work on a view of the data restricted to the chosen family.
+    const inS = (id) => !scope || scope.has(id);
+    const people = {};
+    for (const p of all()) if (inS(p.id)) people[p.id] = { ...p, parents: p.parents.filter(inS), spouses: p.spouses.filter(inS) };
     const ids = Object.keys(people);
+    const list = Object.values(people);
 
     // --- generations: child = parent + 1, spouses share a generation
     const gen = Object.fromEntries(ids.map((i) => [i, 0]));
     const kids = Object.fromEntries(ids.map((i) => [i, []]));
-    for (const p of all()) for (const x of p.parents) kids[x].push(p.id);
+    for (const p of list) for (const x of p.parents) kids[x].push(p.id);
     for (let iter = 0; iter < ids.length + 2; iter++) {
       let changed = false;
       for (const id of ids) {
@@ -180,7 +199,7 @@
     // --- units (connected components of the spouse graph)
     const uf = Object.fromEntries(ids.map((i) => [i, i]));
     const find = (x) => { while (uf[x] !== x) { uf[x] = uf[uf[x]]; x = uf[x]; } return x; };
-    for (const p of all()) for (const s of p.spouses) uf[find(p.id)] = find(s);
+    for (const p of list) for (const s of p.spouses) uf[find(p.id)] = find(s);
     const groups = new Map();
     for (const id of ids) { const r = find(id); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(id); }
 
@@ -212,10 +231,18 @@
       if (v === u) u.parent = null;
     }
     for (const u of units) if (u.parent) u.parent.kids.push(u);
+    // Link cards for spouses whose own parents are elsewhere in the tree.
+    for (const u of units) {
+      for (const m of u.members) {
+        if (m === u.anchor) continue;
+        const pu = people[m].parents.map((x) => unitOf.get(x)).find((v) => v && v !== u);
+        if (pu) pu.kids.push({ ghost: true, key: 'g:' + m, anchor: m, members: [m], kids: [], gen: gen[m], home: u });
+      }
+    }
     for (const u of units) u.kids.sort((a, b) => byAge(a.anchor, b.anchor));
 
     const unitW = (u) => u.members.length * CARD_W + (u.members.length - 1) * SPOUSE_GAP;
-    const descCount = (u) => u.kids.reduce((n, k) => n + k.members.length + descCount(k), 0);
+    const descCount = (u) => u.kids.reduce((n, k) => n + (k.ghost ? 1 : k.members.length + descCount(k)), 0);
 
     // --- measure / place (parents centred over their children)
     function measure(u) {
@@ -226,7 +253,8 @@
       return (u.w = Math.max(w, u.kw));
     }
     const minGen = Math.min(0, ...Object.values(gen));
-    const pos = new Map();
+    const pos = new Map();        // real cards
+    const ghostPos = new Map();   // link cards
     const visibleUnits = [];
     function place(u, left) {
       const w = unitW(u);
@@ -238,7 +266,7 @@
         const centre = (f.x + unitW(f) / 2 + l.x + unitW(l) / 2) / 2;
         u.x = clamp(centre - w / 2, left, left + u.w - w);
       } else u.x = left + (u.w - w) / 2;
-      u.members.forEach((m, i) => pos.set(m, { x: u.x + i * (CARD_W + SPOUSE_GAP), y: u.y }));
+      u.members.forEach((m, i) => (u.ghost ? ghostPos : pos).set(m, { x: u.x + i * (CARD_W + SPOUSE_GAP), y: u.y }));
       visibleUnits.push(u);
     }
 
@@ -247,7 +275,7 @@
     const rootOf = (u) => { while (u.parent) u = u.parent; return u; };
     roots.forEach(measure);
     const links = new Map(roots.map((r) => [r, new Set()]));
-    for (const p of all()) {
+    for (const p of list) {
       const ru = rootOf(unitOf.get(p.id));
       for (const x of p.parents) {
         const rx = rootOf(unitOf.get(x));
@@ -269,18 +297,48 @@
     let x = 0;
     for (const r of ordered) { place(r, x); x += r.w + TREE_GAP; }
 
-    for (const [, v] of pos) { v.x += PAD; v.y += PAD; }
+    for (const m of [pos, ghostPos]) for (const [, v] of m) { v.x += PAD; v.y += PAD; }
     visibleUnits.forEach((u) => { u.x += PAD; u.y += PAD; });
 
     const maxGen = Math.max(0, ...visibleUnits.map((u) => u.gen - minGen));
     const first = ordered[0];
     return {
-      pos, unitOf, visibleUnits, unitW, descCount,
+      people, pos, ghostPos, unitOf, visibleUnits, unitW, descCount, roots: ordered,
       focusX: first ? first.x + unitW(first) / 2 : 0,
       width: Math.max(0, x - TREE_GAP) + PAD * 2,
       height: (maxGen) * ROW_H + CARD_H + PAD * 2,
       generations: new Set(Object.values(gen)).size,
     };
+  }
+
+  // ======================================================= family filter
+
+  const coupleName = (id) => [id, ...P(id).spouses].map((x) => P(x).name).join(' & ');
+
+  function currentScope() {
+    if (!scopeId || !P(scopeId)) { scopeId = null; return null; }
+    return familyOf(scopeId);
+  }
+
+  function renderScopeSelect() {
+    const full = computeLayout(null);
+    const families = full.roots.filter((u) => u.kids.length).map((u) => u.anchor);
+    if (scopeId && !families.some((f) => f === scopeId || P(f).spouses.includes(scopeId))) families.push(scopeId);
+    const sel = $('#scopeSelect');
+    sel.innerHTML = `<option value="">Everyone (${all().length})</option>` + families.map((id) =>
+      `<option value="${esc(id)}">Family of ${esc(coupleName(id))} (${familyOf(id).size})</option>`).join('');
+    const match = scopeId && families.find((f) => f === scopeId || P(f).spouses.includes(scopeId));
+    sel.value = match || '';
+    $('#scopeWrap').classList.toggle('active', !!scopeId);
+  }
+
+  function setScope(id) {
+    scopeId = id || null;
+    closePanel();
+    saveUI();
+    render();
+    fit(true, 0.5);
+    if (scopeId) toast(`Showing the family of ${coupleName(scopeId)}`);
   }
 
   // ============================================================== render
@@ -291,66 +349,60 @@
     const d = Math.sign(cx - sx);
     return `M${sx},${sy}V${busY - r}Q${sx},${busY} ${sx + d * r},${busY}H${cx - d * r}Q${cx},${busY} ${cx},${busY + r}V${cy}`;
   }
-  function curve(sx, sy, cx, cy) {
-    const dy = Math.max(60, (cy - sy) / 2);
-    return `M${sx},${sy}C${sx},${sy + dy} ${cx},${cy - dy} ${cx},${cy}`;
+
+  function cardHTML(id, x, y, ghostOf) {
+    const p = P(id);
+    const sub = ghostOf
+      ? `Married to ${P(ghostOf).name} ↗`
+      : [p.nickname && `“${p.nickname}”`, years(p)].filter(Boolean).join(' · ') || p.location || '';
+    return `<div class="card ${p.gender}${isDead(p) ? ' dead' : ''}${ghostOf ? ' ghost' : ''}" data-id="${esc(id)}"${ghostOf ? ' data-ghost="1"' : ''} style="left:${x}px;top:${y}px" tabindex="0" role="button" aria-label="${esc(p.name)}${ghostOf ? ' (go to their family)' : ''}" ${ghostOf ? 'title="Shown with their spouse. Click to go there."' : ''}>
+        ${avatar(p)}
+        <div class="txt"><div class="nm">${esc(p.name)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>
+      </div>`;
   }
 
   function render() {
-    L = computeLayout();
-    const { pos, unitOf, visibleUnits, unitW } = L;
+    L = computeLayout(currentScope());
+    const { pos, ghostPos, visibleUnits, unitW } = L;
     const nodes = [];
     const paths = [];
 
-    // spouse links
     for (const u of visibleUnits) {
+      if (u.ghost) continue;
+      // spouse links
       for (let i = 0; i + 1 < u.members.length; i++) {
         const a = pos.get(u.members[i]), b = pos.get(u.members[i + 1]);
         const y = a.y + CARD_H / 2;
         paths.push(`<path class="spouse" d="M${a.x + CARD_W},${y}H${b.x}"/>`);
-        paths.push(`<circle class="ring" cx="${(a.x + CARD_W + b.x) / 2}" cy="${y}" r="5"/>`);
+        paths.push(`<circle class="ring" cx="${(a.x + CARD_W + b.x) / 2}" cy="${y}" r="4"/>`);
       }
-    }
-
-    // parent → child links
-    for (const c of all()) {
-      const cp = pos.get(c.id);
-      if (!cp) continue;
-      const vp = c.parents.filter((x) => pos.has(x));
-      if (!vp.length) continue;
-      const cu = unitOf.get(c.id);
-      const pu = unitOf.get(vp[0]);
-      const isTree = cu.anchor === c.id && cu.parent === pu;
-      const groupsOfParents = vp.length === 2 && unitOf.get(vp[1]) === pu ? [vp] : vp.map((x) => [x]);
-      for (const g of groupsOfParents) {
-        const pts = g.map((x) => pos.get(x));
+      // parent → child links
+      if (!u.open) continue;
+      for (const k of u.kids) {
+        const c = k.anchor;
+        const cp = (k.ghost ? ghostPos : pos).get(c);
+        const par = L.people[c].parents.filter((x) => u.members.includes(x));
+        if (!cp || !par.length) continue;
+        const pts = par.map((x) => pos.get(x));
         let sx, sy;
-        if (pts.length === 2) { sx = (Math.min(pts[0].x, pts[1].x) + CARD_W + Math.max(pts[0].x, pts[1].x)) / 2; sy = pts[0].y + CARD_H / 2 + 5; }
+        if (pts.length === 2) { sx = (Math.min(pts[0].x, pts[1].x) + CARD_W + Math.max(pts[0].x, pts[1].x)) / 2; sy = pts[0].y + CARD_H / 2 + 4; }
         else { sx = pts[0].x + CARD_W / 2; sy = pts[0].y + CARD_H; }
         const cx = cp.x + CARD_W / 2, cy = cp.y;
-        const tree = isTree && g.includes(vp[0]);
-        const d = tree ? elbow(sx, sy, cx, cy, cy - 44) : curve(sx, sy, cx, cy);
-        paths.push(`<path class="${tree ? 'tree' : 'cross'}" data-c="${esc(c.id)}" data-p="${esc(g.join(' '))}" d="${d}"/>`);
+        paths.push(`<path class="tree${k.ghost ? ' to-ghost' : ''}" data-c="${esc(c)}" data-p="${esc(par.join(' '))}" d="${elbow(sx, sy, cx, cy, cy - 44)}"/>`);
       }
     }
 
-    // cards
-    for (const [id, p0] of pos) {
-      const p = P(id);
-      const sub = [p.nickname && `“${p.nickname}”`, years(p)].filter(Boolean).join(' · ') || p.location || '';
-      nodes.push(`<div class="card ${p.gender}${isDead(p) ? ' dead' : ''}" data-id="${esc(id)}" style="left:${p0.x}px;top:${p0.y}px" tabindex="0" role="button" aria-label="${esc(p.name)}">
-        ${avatar(p)}
-        <div class="txt"><div class="nm">${esc(p.name)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>
-      </div>`);
-    }
+    for (const [id, p] of pos) nodes.push(cardHTML(id, p.x, p.y));
+    for (const u of visibleUnits) if (u.ghost) { const p = ghostPos.get(u.anchor); nodes.push(cardHTML(u.anchor, p.x, p.y, u.home.anchor === u.anchor ? u.home.members.find((m) => m !== u.anchor) : u.home.anchor)); }
 
     // expand / collapse pills
     for (const u of visibleUnits) {
-      if (!u.kids.length) continue;
+      if (u.ghost || !u.kids.length) continue;
       const cx = u.x + unitW(u) / 2;
       const cy = u.y + CARD_H + 30;
-      const label = u.open ? '−' : `+${L.descCount(u)}`;
-      const title = u.open ? 'Hide descendants' : `Show ${L.descCount(u)} descendant(s)`;
+      const n = L.descCount(u);
+      const label = u.open ? '−' : `+${n}`;
+      const title = u.open ? 'Hide children' : `Show ${n} hidden`;
       nodes.push(`<button class="tgl${u.open ? '' : ' closed'}" data-toggle="${esc(u.key)}" style="left:${cx}px;top:${cy}px" title="${title}" aria-label="${title}">${label}</button>`);
     }
 
@@ -359,16 +411,19 @@
     svg.setAttribute('height', L.height);
     svg.innerHTML = paths.join('');
     $('#nodes').innerHTML = nodes.join('');
-    document.body.classList.toggle('many', pos.size > 160);
 
     const total = all().length;
-    $('#stats').innerHTML = `<span><b>${total}</b> ${total === 1 ? 'person' : 'people'}</span><span><b>${total ? L.generations : 0}</b> generations</span>`;
+    $('#stats').innerHTML = scopeId
+      ? `<span><b>${Object.keys(L.people).length}</b> of ${total} people</span><button class="link" id="showAll">Show everyone</button>`
+      : `<span><b>${total}</b> ${total === 1 ? 'person' : 'people'}</span><span><b>${total ? L.generations : 0}</b> generations</span>`;
+    $('#showAll')?.addEventListener('click', () => setScope(null));
+    renderScopeSelect();
     const banner = $('#banner');
     banner.hidden = banner.dataset.closed === '1' || !all().some(isPlaceholder);
 
     let empty = $('#emptyState');
     if (!total && !empty) {
-      document.body.insertAdjacentHTML('beforeend', `<div id="emptyState" class="empty-state glass"><h2>Start your family tree</h2><p>Add the first person, then add their parents, spouse and children.</p><button class="btn primary" id="emptyAdd">+ Add person</button></div>`);
+      document.body.insertAdjacentHTML('beforeend', `<div id="emptyState" class="empty-state"><h2>Start your family tree</h2><p>Add the first person, then add their parents, spouse and children.</p><button class="btn primary" id="emptyAdd">+ Add person</button></div>`);
       $('#emptyAdd').onclick = () => openEditor(null);
     } else if (total && empty) empty.remove();
 
@@ -538,11 +593,11 @@
     if (t) { toggle(t.dataset.toggle); return; }
     if (moved > 4) return;
     const c = e.target.closest('.card');
-    if (c) select(c.dataset.id);
+    if (c) c.dataset.ghost ? locate(c.dataset.id) : select(c.dataset.id);
   });
   $('#nodes').addEventListener('keydown', (e) => {
     const c = e.target.closest('.card');
-    if (c && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); select(c.dataset.id); }
+    if (c && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); c.dataset.ghost ? locate(c.dataset.id) : select(c.dataset.id); }
   });
   viewport.addEventListener('click', (e) => {
     if (moved <= 4 && !e.target.closest('.card, .tgl')) closePanel();
@@ -559,7 +614,9 @@
   // Make sure someone is visible (expand every collapsed ancestor), then fly to them.
   function locate(id, { open = true } = {}) {
     if (!P(id)) return;
-    const lay = computeLayout();
+    const scope = currentScope();
+    if (scope && !scope.has(id)) { scopeId = null; saveUI(); render(); toast('Showing everyone'); }
+    const lay = computeLayout(currentScope());
     let u = lay.unitOf.get(id)?.parent;
     let changed = false;
     while (u) { if (collapsed.delete(u.key)) changed = true; u = u.parent; }
@@ -568,7 +625,7 @@
     centreOn(id);
     requestAnimationFrame(() => {
       const el = $(`#nodes .card[data-id="${CSS.escape(id)}"]`);
-      if (el) { el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse'); }
+      if (el) { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
     });
   }
 
@@ -624,6 +681,7 @@
         <button class="btn" data-act="add-spouse">+ Spouse</button>
         <button class="btn" data-act="add-sibling">+ Sibling</button>
         <button class="btn" data-act="add-child">+ Child</button>
+        ${childrenOf(id).length ? `<button class="btn wide" data-act="scope">Show only this family</button>` : ''}
         <button class="btn ghost danger wide" data-act="delete">Delete</button>
       </div>`;
     $('#panel').classList.add('open');
@@ -645,6 +703,7 @@
         if (!p.parents.length) { toast(`Add ${p.name}'s parent first. Siblings hang under the same parents.`); break; }
         openEditor(null, { parents: [...p.parents] }); break;
       case 'add-parent': openEditor(null, { spouses: p.parents.slice(0, 1) }, { childOf: id }); break;
+      case 'scope': setScope(id); break;
       case 'delete': deletePerson(id); break;
     }
   });
@@ -854,7 +913,7 @@
     switch (b.dataset.menu) {
       case 'expand': collapsed.clear(); saveUI(); render(); fit(); break;
       case 'collapse': {
-        const lay = computeLayout();
+        const lay = computeLayout(currentScope());
         collapsed = new Set([...lay.unitOf.values()].filter((u) => u.kids.length).map((u) => u.key));
         saveUI(); render(); fit(); break;
       }
@@ -869,7 +928,7 @@
       }
       case 'reset':
         if (!confirm('Replace everything with the starter tree? Export a backup first if you want to keep your data.')) return;
-        state = starterTree(); collapsed.clear(); closePanel(); save(); saveUI(); render(); fit();
+        state = starterTree(); collapsed.clear(); scopeId = null; closePanel(); save(); saveUI(); render(); fit();
         toast('Reset to starter tree');
         break;
     }
@@ -882,10 +941,11 @@
     try {
       const data = normalize(JSON.parse(await f.text()));
       if (!confirm(`Replace the current tree (${all().length} people) with this file (${Object.keys(data.people).length} people)?`)) return;
-      state = data; collapsed.clear(); closePanel(); save(); saveUI(); render(); fit();
+      state = data; collapsed.clear(); scopeId = null; closePanel(); save(); saveUI(); render(); fit();
       toast('Imported ' + f.name);
     } catch { toast('That file is not a valid family tree backup.'); }
   });
+  $('#scopeSelect').addEventListener('change', (e) => setScope(e.target.value));
   $('#bannerClose').onclick = () => { $('#banner').dataset.closed = '1'; $('#banner').hidden = true; saveUI(); };
 
   document.addEventListener('keydown', (e) => {
