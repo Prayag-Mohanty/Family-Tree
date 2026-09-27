@@ -36,24 +36,24 @@ body {
 }
 button, input, select, textarea { font: inherit; color: inherit; }
 
-/* Glass: clear, untinted frosted panes with a soft top sheen */
+/* Glass: translucent, untinted panes. Whatever sits behind them (lines,
+   cards, the tree while panning) shows through softly blurred. */
 .glass, .glass-strong, .card, .tgl, .btn:not(.primary):not(.ghost), .chip, #search, .scope, .f input, .f select, .f textarea, .pk-input {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, .92) 0%, rgba(255, 255, 255, .55) 55%, rgba(255, 255, 255, .72) 100%);
-  -webkit-backdrop-filter: blur(16px) saturate(120%);
-  backdrop-filter: blur(16px) saturate(120%);
+  background: rgba(255, 255, 255, .34);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  backdrop-filter: blur(10px) saturate(140%);
 }
 .glass, .glass-strong {
-  border: 1px solid rgba(0, 0, 0, .07);
+  background: rgba(255, 255, 255, .42);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  backdrop-filter: blur(22px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, .7);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, .95),
-    inset 0 -1px 0 rgba(0, 0, 0, .025),
-    0 1px 2px rgba(0, 0, 0, .04),
-    0 10px 30px rgba(0, 0, 0, .07);
+    0 0 0 1px rgba(0, 0, 0, .06),
+    inset 0 1px 0 rgba(255, 255, 255, .9),
+    0 12px 36px rgba(0, 0, 0, .08);
 }
-.glass-strong {
-  background: linear-gradient(180deg, rgba(255, 255, 255, .97) 0%, rgba(255, 255, 255, .86) 100%);
-}
+.glass-strong { background: rgba(255, 255, 255, .58); }
 
 /* ---------- canvas ---------- */
 .viewport {
@@ -79,17 +79,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
   position: absolute; width: 208px; height: 76px;
   display: flex; align-items: center; gap: 11px; padding: 0 12px 0 13px;
   border-radius: 6px; cursor: pointer; user-select: none;
-  border: 1px solid rgba(0, 0, 0, .08);
+  border: 1px solid rgba(0, 0, 0, .09);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 1),
-    inset 0 0 0 1px rgba(255, 255, 255, .6),
-    0 1px 2px rgba(0, 0, 0, .04),
-    0 8px 22px rgba(0, 0, 0, .06);
+    inset 0 1px 0 rgba(255, 255, 255, .9),
+    inset 0 0 0 1px rgba(255, 255, 255, .35),
+    0 6px 20px rgba(0, 0, 0, .05);
   transition: border-color .15s, box-shadow .15s, opacity .15s;
 }
-.card::after {  /* glass reflection */
-  content: ""; position: absolute; inset: 1px 1px 50% 1px; border-radius: 5px 5px 40% 40% / 5px 5px 14px 14px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, .75), rgba(255, 255, 255, 0));
+.card::after {  /* faint glass edge highlight */
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  background: linear-gradient(160deg, rgba(255, 255, 255, .45), rgba(255, 255, 255, 0) 45%);
   pointer-events: none;
 }
 .card > * { position: relative; z-index: 1; }
@@ -151,7 +150,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .scope {
   display: flex; align-items: center; height: 38px; border: 1px solid var(--border); border-radius: 10px;
-  background: #fff; padding-left: 10px; max-width: 320px; min-width: 0;
+  background: rgba(255, 255, 255, .4); padding-left: 10px; max-width: 320px; min-width: 0;
 }
 .scope.active { border-color: var(--gold); }
 .scope-lbl { font-size: 13px; color: var(--muted); font-style: italic; }
@@ -164,7 +163,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .search-ic { z-index: 2; position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
 #search {
   width: 100%; height: 38px; padding: 0 12px 0 38px; border-radius: 10px;
-  border: 1px solid var(--border); background: #fff; outline: none;
+  border: 1px solid var(--border); background: rgba(255, 255, 255, .4); outline: none;
 }
 #search:focus { border-color: var(--accent); }
 .results {
@@ -184,7 +183,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .btn, .as-btn {
   height: 38px; padding: 0 14px; border-radius: 6px; cursor: pointer; white-space: nowrap;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  border: 1px solid var(--border-strong); background: #fff; font-weight: 500; font-size: 15.5px; letter-spacing: .02em;
+  border: 1px solid var(--border-strong); background: rgba(255, 255, 255, .4); font-weight: 500; font-size: 15.5px; letter-spacing: .02em;
 }
 .btn:hover { background: var(--hover); }
 .btn.primary { color: #fbf8f1; background: var(--text); border-color: var(--text); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .12); }
@@ -257,13 +256,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .p-facts dt { color: var(--muted); font-style: italic; }
 .p-facts dd { margin: 0; overflow-wrap: anywhere; }
 .p-facts a { color: var(--accent); text-decoration: none; }
-.p-notes { margin-top: 14px; padding: 10px 14px; border-radius: 6px; background: #fdfbf6; border: 1px solid var(--border); font-size: 16px; white-space: pre-wrap; line-height: 1.5; }
+.p-notes { margin-top: 14px; padding: 10px 14px; border-radius: 6px; background: rgba(255, 255, 255, .35); border: 1px solid var(--border); font-size: 16px; white-space: pre-wrap; line-height: 1.5; }
 .p-sec { margin-top: 16px; }
 .p-sec h4 { margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: var(--gold); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
   display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 3px; border-radius: 99px;
-  background: #fff; border: 1px solid var(--border); font-size: 15px; cursor: pointer;
+  background: rgba(255, 255, 255, .4); border: 1px solid var(--border); font-size: 15px; cursor: pointer;
 }
 .chip:hover { background: var(--hover); }
 .chip .rm { border: 0; background: none; padding: 0 0 0 2px; cursor: pointer; color: var(--faint); font-size: 12px; }
@@ -276,7 +275,7 @@ dialog {
   border-radius: 10px; padding: 0; color: var(--text);
   width: min(600px, calc(100vw - 24px)); max-height: calc(100dvh - 24px);
 }
-dialog::backdrop { background: rgba(17, 24, 39, .25); }
+dialog::backdrop { background: rgba(255, 255, 255, .12); -webkit-backdrop-filter: blur(1.5px); backdrop-filter: blur(1.5px); }
 #editForm { padding: 18px 20px 20px; display: flex; flex-direction: column; gap: 14px; }
 .dlg-head { display: flex; justify-content: space-between; align-items: center; }
 .dlg-head h2 { margin: 0; font-size: 24px; font-weight: 500; }
@@ -284,7 +283,7 @@ dialog::backdrop { background: rgba(17, 24, 39, .25); }
 .hint { font-weight: 400; color: var(--faint); }
 .f input, .f select, .f textarea, .pk-input {
   height: 38px; padding: 0 11px; border-radius: 9px; border: 1px solid var(--border);
-  background: #fff; color: var(--text); font-size: 16px; font-style: normal; font-weight: 400; outline: none; width: 100%;
+  background: rgba(255, 255, 255, .4); color: var(--text); font-size: 16px; font-style: normal; font-weight: 400; outline: none; width: 100%;
 }
 .f textarea { height: auto; padding: 9px 11px; resize: vertical; }
 .f input:focus, .f select:focus, .f textarea:focus, .pk-input:focus { border-color: var(--accent); }
@@ -302,7 +301,7 @@ dialog::backdrop { background: rgba(17, 24, 39, .25); }
 .pk-list {
   position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 5; border-radius: 8px; padding: 4px;
   max-height: 230px; overflow-y: auto; display: none;
-  background: #fff; border: 1px solid var(--border); box-shadow: var(--shadow);
+  background: rgba(255, 255, 255, .82); border: 1px solid var(--border); box-shadow: var(--shadow);
 }
 .pk-list.open { display: block; }
 
@@ -315,7 +314,7 @@ dialog::backdrop { background: rgba(17, 24, 39, .25); }
 
 .empty-state {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); text-align: center; z-index: 2;
-  padding: 28px 32px; border-radius: 10px; background: #fff; border: 1px solid var(--border); box-shadow: var(--shadow);
+  padding: 28px 32px; border-radius: 10px; background: rgba(255, 255, 255, .4); border: 1px solid var(--border); box-shadow: var(--shadow);
 }
 .empty-state h2 { margin: 0 0 6px; font-size: 26px; font-weight: 500; }
 .empty-state p { margin: 0 0 16px; color: var(--muted); }
@@ -355,7 +354,7 @@ dialog::backdrop { background: rgba(17, 24, 39, .25); }
 
 /* ---------- relationship checker ---------- */
 #relDialog { width: min(820px, calc(100vw - 24px)); }
-.rel { padding: 18px 22px 22px; display: flex; flex-direction: column; gap: 14px; }
+.rel-wrap { padding: 18px 22px 22px; display: flex; flex-direction: column; gap: 14px; }
 .rel-lead { margin: -6px 0 0; color: var(--muted); font-style: italic; }
 .rel-pick { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: end; }
 .rel-pick .swap { margin-bottom: 1px; font-size: 18px; }
@@ -368,8 +367,8 @@ dialog::backdrop { background: rgba(17, 24, 39, .25); }
 .rel-card {
   position: relative; border-radius: 8px; padding: 14px 16px 12px;
   border: 1px solid rgba(0, 0, 0, .08);
-  background: linear-gradient(180deg, rgba(255, 255, 255, .95), rgba(255, 255, 255, .6));
-  box-shadow: inset 0 1px 0 #fff, 0 8px 22px rgba(0, 0, 0, .05);
+  background: rgba(255, 255, 255, .35);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9), 0 8px 22px rgba(0, 0, 0, .05);
 }
 .rc-h { font-size: 15px; color: var(--muted); margin-bottom: 8px; }
 .rc-h b { color: var(--text); font-weight: 600; }
@@ -387,8 +386,8 @@ dialog::backdrop { background: rgba(17, 24, 39, .25); }
 .rt-row { display: grid; grid-template-columns: 1.3fr 1.6fr 1fr 1fr; gap: 10px; padding: 8px 12px; font-size: 15.5px; align-items: center; border-top: 1px solid var(--border); cursor: pointer; }
 .rt-row[hidden] { display: none; }
 .rt-row:first-child { border-top: 0; }
-.rt-row:not(.rt-head):hover { background: var(--hover); }
-.rt-head { cursor: default; font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--gold); font-weight: 600; background: #fdfbf6; }
+.rt-row:not(.rt-head):hover { background: rgba(255, 255, 255, .5); }
+.rt-head { cursor: default; font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--gold); font-weight: 600; background: rgba(255, 255, 255, .35); }
 .rt-name { display: flex; align-items: center; gap: 8px; font-weight: 600; min-width: 0; }
 .rt-rel { color: var(--muted); font-style: italic; }
 .rel-note { margin: 0; font-size: 14px; font-style: italic; color: var(--muted); }
@@ -402,3 +401,7 @@ dialog::backdrop { background: rgba(17, 24, 39, .25); }
   .rt-row > span:nth-child(2) { grid-column: 2; }
   .rt-head span:nth-child(n+3) { display: none; }
 }
+
+/* Lists you read from stay a little more opaque, still see-through */
+.results, .menu { background: rgba(255, 255, 255, .8); }
+.pk-list { -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }

@@ -1247,7 +1247,7 @@
   relDlg.addEventListener('click', (e) => {
     if (e.target === relDlg) { relDlg.close(); return; }          // click on the backdrop
     const row = e.target.closest('[data-rel-b]');
-    if (row) { openRelations(relPair[0], row.dataset.relB); $('.rel', relDlg).scrollTop = 0; relDlg.scrollTop = 0; return; }
+    if (row) { openRelations(relPair[0], row.dataset.relB); relDlg.scrollTop = 0; return; }
     const ed = e.target.closest('[data-edit-term]');
     if (ed) {
       const key = ed.dataset.editTerm.toLowerCase();
