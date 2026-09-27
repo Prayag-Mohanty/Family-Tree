@@ -10,6 +10,7 @@
 //   POST /api/tree?id=…   { password, verify: true }       -> { ok } or 403
 //   POST /api/tree?id=…   { password, tree: {people, terms} } -> { ok, version }
 //        The first save for an id sets its editor password.
+//   POST /api/tree?id=…   { password, remove: true }   -> { ok }  (used when changing the passcode)
 
 const crypto = require('crypto');
 
@@ -28,6 +29,7 @@ const store = process.env.TREE_STORE === 'memory'
       return { status: 200, etag: v.etag, text: v.text };
     },
     async write(path, text) { memory.set(path, { text, etag: '"' + crypto.createHash('md5').update(text).digest('hex') + '"' }); },
+    async remove(paths) { paths.forEach((p) => memory.delete(p)); },
   }
   : {
     ready: () => !!(process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_STORE_ID),
@@ -41,6 +43,10 @@ const store = process.env.TREE_STORE === 'memory'
     async write(path, text) {
       const { put } = require('@vercel/blob');
       await put(path, text, { access: 'private', contentType: 'application/json', addRandomSuffix: false, allowOverwrite: true, cacheControlMaxAge: 60 });
+    },
+    async remove(paths) {
+      const { del } = require('@vercel/blob');
+      await del(paths);
     },
   };
 
@@ -91,6 +97,11 @@ module.exports = async (req, res) => {
       const owner = await checkOwner(paths, password);
 
       if (body.verify) return owner === 'ok' ? send(res, 200, { ok: true }) : send(res, 403, { error: owner === 'unset' ? 'no_tree' : 'wrong_password' });
+      if (body.remove) {
+        if (owner !== 'ok') return send(res, 403, { error: 'wrong_password' });
+        await store.remove([paths.tree, paths.owner]);
+        return send(res, 200, { ok: true });
+      }
 
       const tree = body.tree;
       if (!tree || typeof tree !== 'object' || typeof tree.people !== 'object') return send(res, 400, { error: 'bad_tree' });

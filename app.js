@@ -7,11 +7,11 @@
   const UI_KEY = 'familyTree.ui';
 
   // Layout metrics (world units = px at 100% zoom)
-  let CARD_W = 208, CARD_H = 76;  // larger with "Larger profile cards"
-  const SPOUSE_GAP = 36;          // gap between spouses in a couple
-  const SIB_GAP = 44;             // gap between sibling sub-trees
-  const TREE_GAP = 140;           // gap between unconnected top-level families
-  let ROW_H = CARD_H + 124;       // vertical distance between generations
+  let CARD_W = 164, CARD_H = 66;  // larger with "Larger profile cards"
+  const SPOUSE_GAP = 28;          // gap between spouses in a couple
+  const SIB_GAP = 30;             // gap between sibling sub-trees
+  const TREE_GAP = 110;           // gap between unconnected top-level families
+  let ROW_H = CARD_H + 108;       // vertical distance between generations
   const PAD = 120;
 
   const $ = (s, r = document) => r.querySelector(s);
@@ -26,6 +26,8 @@
   let selectedId = null;
   let scopeId = null;            // when set, only this person's family is shown
   let meId = null;               // remembered by the relationship checker
+  let hideSiblings = false;      // show only the direct line of the home person
+  let firstVisit = false;        // no saved view yet: open on the home families
   let lastSelected = null;
   const cam = { x: 0, y: 0, k: 1 };
 
@@ -132,15 +134,17 @@
     queuePush();
   }
   function saveUI() {
-    try { localStorage.setItem(UI_KEY, JSON.stringify({ collapsed: [...collapsed], scopeId, meId, bannerClosed: $('#banner').dataset.closed === '1' })); } catch { /* ignore */ }
+    try { localStorage.setItem(UI_KEY, JSON.stringify({ v: 2, collapsed: [...collapsed], scopeId, meId, hideSiblings, bannerClosed: $('#banner').dataset.closed === '1' })); } catch { /* ignore */ }
   }
 
   async function load() {
     try {
       const ui = JSON.parse(localStorage.getItem(UI_KEY) || '{}');
-      collapsed = new Set(ui.collapsed || []);
-      scopeId = ui.scopeId || null;
+      firstVisit = ui.v !== 2;
+      collapsed = new Set(firstVisit ? [] : ui.collapsed || []);
+      scopeId = firstVisit ? '@home' : ui.scopeId || null;
       meId = ui.meId || null;
+      hideSiblings = !!ui.hideSiblings;
       if (ui.bannerClosed) $('#banner').dataset.closed = '1';
     } catch { /* ignore */ }
     try {
@@ -219,7 +223,8 @@
     return p.deceased ? '†' : '';
   }
   const isDead = (p) => p.deceased || !!p.deathYear;
-  const avatar = (p, cls = '') => `<div class="av ${p.gender} ${cls}"${p.photo ? ` style="background-image:url('${esc(p.photo)}')"` : ''}>${p.photo ? '' : esc(initials(p))}</div>`;
+  // Photos only: people without one are shown by name alone.
+  const avatar = (p, cls = '') => (p.photo ? `<div class="av ${p.gender} ${cls}" style="background-image:url('${esc(p.photo)}')"></div>` : '');
   function context(p) {
     if (p.parents.length && p.parents.every((x) => P(x).unknown)) {
       const sibs = siblingsOf(p.id).map((x) => P(x).name);
@@ -251,7 +256,8 @@
     return set;
   }
 
-  function computeLayout(scope = null) {
+  // stack: lay top-level families one under another (used by the home view)
+  function computeLayout(scope = null, stack = false, unfold = false) {
     // Work on a view of the data restricted to the chosen family.
     const inS = (id) => !scope || scope.has(id);
     const people = {};
@@ -368,7 +374,7 @@
     // --- measure / place (parents centred over their children)
     function measure(u) {
       const w = unitW(u);
-      u.open = u.kids.length > 0 && !collapsed.has(u.key);
+      u.open = u.kids.length > 0 && (unfold || !collapsed.has(u.key));
       if (!u.open) { u.kw = 0; return (u.w = w); }
       u.kw = u.kids.reduce((s, k, i) => s + measure(k) + (i ? SIB_GAP : 0), 0);
       return (u.w = Math.max(w, u.kw));
@@ -376,9 +382,10 @@
     const minGen = Math.min(0, ...Object.values(gen));
     const pos = new Map();          // the primary card of each person
     const visibleUnits = [];
+    let baseGen = minGen, yOff = 0;
     function place(u, left) {
       const w = unitW(u);
-      u.y = (u.gen - minGen) * ROW_H + PAD;
+      u.y = (u.gen - baseGen) * ROW_H + PAD + yOff;
       if (u.open) {
         let cx = left + (u.w - u.kw) / 2;
         for (const k of u.kids) { place(k, cx); cx += k.w + SIB_GAP; }
@@ -416,7 +423,27 @@
       }
     }
     let x = PAD;
-    for (const r of ordered) { place(r, x); x += r.w + TREE_GAP; }
+    if (!stack) {
+      for (const r of ordered) { place(r, x); x += r.w + TREE_GAP; }
+    } else {
+      // One family under another, each with its top couple centred on the same line.
+      const blocks = [];
+      for (const r of ordered) {
+        const start = visibleUnits.length;
+        baseGen = r.gen;
+        place(r, PAD);
+        const units = visibleUnits.slice(start);
+        const bottom = Math.max(...units.map((u) => u.y)) + CARD_H;
+        blocks.push({ units, centre: r.x + unitW(r) / 2 });
+        yOff = bottom - PAD + ROW_H * 0.55;
+      }
+      const C = Math.max(...blocks.map((b) => b.centre));
+      for (const b of blocks) {
+        const dx = C - b.centre;
+        for (const u of b.units) { u.x += dx; for (const p of u.mpos.values()) p.x += dx; }
+      }
+      x = Math.max(...visibleUnits.map((u) => u.x + unitW(u))) + TREE_GAP;
+    }
 
     const maxGen = Math.max(0, ...visibleUnits.map((u) => u.gen - minGen));
     const first = ordered[0];
@@ -425,9 +452,13 @@
       bridges: bridges.filter((b) => b.real.mpos && b.copy.mpos && visibleUnits.includes(b.real) && visibleUnits.includes(b.copy)),
       byKey: new Map(visibleUnits.map((u) => [u.key, u])),
       allPos: visibleUnits.flatMap((u) => [...u.mpos.values()]),
-      focusX: first ? first.x + unitW(first) / 2 : 0,
+      focusX: stack && ordered.length ? ordered[0].x + unitW(ordered[0]) / 2 : (() => {
+        const big = ordered.filter((u) => u.kids.length);
+        const us = big.length ? big : ordered.slice(0, 1);
+        return us.length ? us.reduce((sum, u) => sum + u.x + unitW(u) / 2, 0) / us.length : 0;
+      })(),
       width: Math.max(0, x - TREE_GAP) + PAD,
-      height: (maxGen) * ROW_H + CARD_H + PAD * 2,
+      height: (visibleUnits.length ? Math.max(...visibleUnits.map((u) => u.y)) : 0) + CARD_H + PAD,
       generations: new Set(Object.values(gen)).size,
     };
   }
@@ -439,21 +470,65 @@
     : [id, ...P(id).spouses].map((x) => P(x).name).join(' & ');
   const familySize = (id) => [...familyOf(id)].filter((x) => !P(x).unknown).length;
 
+  // The person the tree is "about": you, if you've said so in Relations,
+  // otherwise the person the tree started from (id "me").
+  function homePerson() {
+    if (meId && P(meId) && !P(meId).unknown) return meId;
+    if (P('me') && !P('me').unknown) return 'me';
+    return null;
+  }
+  // Home view: both sets of the home person's grandparents and their families.
+  function homeRoots() {
+    const me = homePerson();
+    if (!me) return [];
+    const roots = [];
+    for (const parent of P(me).parents) {
+      const gp = P(parent)?.parents.find((x) => P(x) && !P(x).unknown);
+      if (gp && !roots.some((r) => r === gp || P(r).spouses.includes(gp))) roots.push(gp);
+    }
+    if (!roots.length) P(me).parents.filter((x) => !P(x).unknown).slice(0, 1).forEach((x) => roots.push(x));
+    return roots;
+  }
+  // You, your parents, grandparents… and your descendants, with their spouses.
+  function directLine(id) {
+    const line = new Set([id]);
+    const up = [id];
+    while (up.length) for (const x of P(up.pop()).parents) if (!line.has(x)) { line.add(x); up.push(x); }
+    const down = [id];
+    while (down.length) { const x = down.pop(); for (const c of childrenOf(x)) if (!line.has(c)) { line.add(c); down.push(c); } }
+    for (const x of [...line]) P(x).spouses.forEach((sp) => line.add(sp));
+    return line;
+  }
+
   function currentScope() {
-    if (!scopeId || !P(scopeId)) { scopeId = null; return null; }
-    return familyOf(scopeId);
+    let base = null;
+    if (scopeId === '@home') {
+      const roots = homeRoots();
+      if (roots.length) { base = new Set(); roots.forEach((r) => familyOf(r).forEach((x) => base.add(x))); }
+    } else if (scopeId && P(scopeId)) base = familyOf(scopeId);
+    else if (scopeId) scopeId = null;
+    if (hideSiblings) {
+      const focus = homePerson() || lastSelected;
+      if (focus && P(focus)) {
+        const line = directLine(focus);
+        base = base ? new Set([...base].filter((x) => line.has(x))) : line;
+      }
+    }
+    return base;
   }
 
   function renderScopeSelect() {
     const full = computeLayout(null);
     const families = full.roots.filter((u) => u.kids.length).map((u) => u.anchor);
-    if (scopeId && !families.some((f) => f === scopeId || P(f).spouses.includes(scopeId))) families.push(scopeId);
-    const sel = $('#scopeSelect');
-    sel.innerHTML = `<option value="">Everyone (${realPeople().length})</option>` + families.map((id) =>
-      `<option value="${esc(id)}">Family of ${esc(coupleName(id))} (${familySize(id)})</option>`).join('');
-    const match = scopeId && families.find((f) => f === scopeId || P(f).spouses.includes(scopeId));
-    sel.value = match || '';
-    $('#scopeWrap').classList.toggle('active', !!scopeId);
+    if (scopeId && scopeId !== '@home' && !families.some((f) => f === scopeId || P(f).spouses.includes(scopeId))) families.push(scopeId);
+    const home = homeRoots();
+    const opts = (home.length ? `<option value="@home">Home: ${esc(home.map(coupleName).join(' + '))}</option>` : '')
+      + `<option value="">Everyone (${realPeople().length})</option>`
+      + families.map((id) => `<option value="${esc(id)}">Family of ${esc(coupleName(id))} (${familySize(id)})</option>`).join('');
+    const match = scopeId === '@home' ? '@home' : scopeId && families.find((f) => f === scopeId || P(f).spouses.includes(scopeId));
+    for (const sel of $$('.scope-select')) { sel.innerHTML = opts; sel.value = match || ''; }
+    $('#scopeWrap').classList.toggle('active', !!scopeId && scopeId !== '@home');
+    $$('[data-menu="siblings"]').forEach((b) => { b.textContent = hideSiblings ? 'Show siblings' : 'Hide siblings (direct line only)'; });
   }
 
   function setScope(id) {
@@ -461,8 +536,34 @@
     closePanel();
     saveUI();
     render();
-    fit(true, 0.5);
-    if (scopeId) toast(`Showing the family of ${coupleName(scopeId)}`);
+    fit(true, readableZoom());
+    if (scopeId && scopeId !== '@home') toast(`Showing the family of ${coupleName(scopeId)}`);
+  }
+
+  const isPhone = () => innerWidth <= 760;
+  const readableZoom = () => (isPhone() ? 0.62 : 0.72);
+
+  // The calm starting point: grandparents and their children, the rest folded away.
+  function goHome(animate = true) {
+    if (!homeRoots().length) { fit(animate, readableZoom()); return; }
+    scopeId = '@home';
+    const lay = computeLayout(currentScope(), true);
+    collapsed = new Set();
+    for (const r of lay.roots) for (const k of r.kids) if (k.kids.length) collapsed.add(k.key);
+    closePanel();
+    saveUI();
+    render();
+    fit(animate, readableZoom());
+  }
+
+  function toggleSiblings() {
+    const focus = homePerson() || lastSelected;
+    if (!hideSiblings && !focus) { toast('Open someone first, or set who you are in Relations.'); return; }
+    hideSiblings = !hideSiblings;
+    saveUI();
+    render();
+    fit(true, readableZoom());
+    toast(hideSiblings ? `Showing only the direct line of ${P(focus).name}` : 'Showing everyone again');
   }
 
   // ============================================================== render
@@ -481,7 +582,7 @@
     const p = P(id);
     if (p.unknown) {
       return `<div class="card unknown" data-id="${esc(id)}" style="left:${x}px;top:${y}px" tabindex="0" role="button" aria-label="Parents unknown">
-        <div class="av">?</div><div class="txt"><div class="nm">Parents unknown</div><div class="sub">Add a name if you find out</div></div>
+        <div class="txt"><div class="nm">Parents unknown</div><div class="sub">Add a name if you find out</div></div>
       </div>`;
     }
     const sub = [p.nickname && `“${p.nickname}”`, years(p)].filter(Boolean).join(' · ') || p.location || '';
@@ -493,7 +594,7 @@
   }
 
   function render() {
-    L = computeLayout(currentScope());
+    L = computeLayout(currentScope(), scopeId === '@home' && !hideSiblings, hideSiblings);
     const { visibleUnits, unitW } = L;
     const nodes = [];
     const paths = [];
@@ -802,7 +903,7 @@
     if (p.unknown) {
       const kids = childrenOf(id);
       $('#panelBody').innerHTML = `
-        <div class="p-head"><div class="av xl">?</div><h2 class="p-name">Parents unknown</h2></div>
+        <div class="p-head"><h2 class="p-name">Parents unknown</h2></div>
         <p class="p-notes">This card links brothers and sisters whose parents aren’t in the tree yet. When you find out, click <em>Add their name</em> to make it a real person.</p>
         <div class="p-sec"><h4>Brothers &amp; sisters · ${kids.length}</h4><div class="chips">${kids.map(chip).join('')}</div></div>
         <div class="p-actions">
@@ -986,7 +1087,7 @@
     const el = $('#photoPreview');
     el.className = `av xl ${F('gender').value}`;
     el.style.backgroundImage = editing.photo ? `url('${editing.photo}')` : '';
-    el.textContent = editing.photo ? '' : initials({ name: F('fullName').value || F('fullName').placeholder || '?' });
+    el.textContent = editing.photo ? '' : 'No photo';
   }
 
   function openEditor(id, preset = {}, extra = {}) {
@@ -1630,8 +1731,8 @@
     sync.etag = r.headers.get('ETag');
     return r.json();
   }
-  async function postTree(body) {
-    const r = await fetch(`api/tree?id=${sync.treeId}`, { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  async function postTree(body, id = sync.treeId) {
+    const r = await fetch(`api/tree?id=${id}`, { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
     return { status: r.status, ...j };
   }
@@ -1709,7 +1810,7 @@
       if (selectedId) P(selectedId) ? renderPanel() : closePanel();
       if (relDlg.open) drawRelations();
     }
-    if (first) fit(false, 0.5);
+    if (first) { if (firstVisit) goHome(false); else fit(false, readableZoom()); }
   }
 
   async function poll() {
@@ -1809,7 +1910,12 @@
           <a class="btn" href="https://wa.me/?text=${encodeURIComponent('Our family tree: ' + link)}" target="_blank" rel="noopener">Send on WhatsApp</a>
           <button class="btn ghost danger" id="leaveShare">Stop using the shared tree on this device</button>
         </div>
-        ${sync.owner ? '' : `<form id="unlockForm" class="join-row">
+        ${sync.owner ? `<details class="change-code"><summary>Change the family passcode</summary>
+          <p class="muted">Everyone will need the new invite link afterwards; the old link stops working.</p>
+          <form id="changeForm" class="join-row">
+            <input class="pk-input" id="newCode" type="password" autocomplete="off" placeholder="New family passcode, e.g. four random words">
+            <button class="btn" type="submit">Change</button>
+          </form></details>` : `<form id="unlockForm" class="join-row">
           <input class="pk-input" id="unlockCode" type="password" autocomplete="current-password" placeholder="Editor password (only if you’re the editor)">
           <button class="btn" type="submit">Unlock editing</button>
         </form>`}
@@ -1822,6 +1928,24 @@
         if (!confirm('Stop showing the shared tree on this device? It stays online for everyone else, and this browser keeps a copy.')) return;
         stopLive(); drawShare(); toast('This device is no longer connected');
       };
+      $('#changeForm')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const code = $('#newCode').value;
+        if (code.trim().length < 12) { toast('Use at least 12 characters, e.g. four random words'); return; }
+        if (code.trim().toLowerCase() === sync.passcode.trim().toLowerCase()) { toast('That’s the current passcode'); return; }
+        if (!confirm('Change the family passcode? The old invite link will stop working, so you’ll need to send the new one to everyone.')) return;
+        const oldId = sync.treeId, pw = sync.owner;
+        clearInterval(sync.timer);
+        const ok = await uploadAndShare(code, pw);
+        if (!ok) {
+          sync.treeId = oldId; setStatus('live'); sync.timer = setInterval(poll, POLL_MS);
+          toast('Couldn’t change the passcode, so nothing was changed. That passcode may already be in use.');
+          return;
+        }
+        await postTree({ password: pw, remove: true }, oldId).catch(() => {});
+        drawShare();
+        toast('Passcode changed. Send family the new invite link.');
+      });
       $('#unlockForm')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const pw = $('#unlockCode').value;
@@ -1991,9 +2115,10 @@
     const fp = P(focus);
     clipDefs.push(`<clipPath id="fanClip"><circle r="${FAN_R0 - 34}" cy="-18"/></clipPath>`);
     const photo = fp.photo ? `<image href="${esc(fp.photo)}" x="${-(FAN_R0 - 34)}" y="${-(FAN_R0 - 34) - 18}" width="${2 * (FAN_R0 - 34)}" height="${2 * (FAN_R0 - 34)}" clip-path="url(#fanClip)" preserveAspectRatio="xMidYMid slice"/>`
-      : `<text class="fan-ini" y="-6" text-anchor="middle">${esc(initials(fp))}</text>`;
+      : '';
     parts.push(`<g class="fan-center" data-fan="${esc(focus)}"><circle class="seg center ${fp.gender}" r="${FAN_R0 - 4}"/>${photo}
-      <text class="fan-name" y="${FAN_R0 - 38}" text-anchor="middle">${esc(fp.name.length > 20 ? fp.name.split(' ')[0] : fp.name)}</text></g>`);
+      ${fp.photo ? `<text class="fan-name" y="${FAN_R0 - 38}" text-anchor="middle">${esc(fp.name.length > 20 ? fp.name.split(' ')[0] : fp.name)}</text>`
+        : `<text class="fan-name big" y="-4" text-anchor="middle"><tspan x="0">${esc(fp.name.split(' ')[0])}</tspan><tspan x="0" dy="22">${esc(fp.name.split(' ').slice(1).join(' '))}</tspan></text>`}</g>`);
     const R = FAN_R0 + Math.max(1, maxG) * FAN_RING;
     const kids = childrenOf(focus).filter((c) => !P(c).unknown);
     host.innerHTML = `<svg class="fan-svg" viewBox="${-R - 10} ${-R - 10} ${2 * R + 20} ${R + FAN_R0 + 30}" preserveAspectRatio="xMidYMid meet">
@@ -2019,6 +2144,7 @@
   function setView(v) {
     view = v;
     $$('.view-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
+    $$('#tabbar [data-tab]').forEach((b) => b.classList.toggle('active', b.dataset.tab === v));
     document.body.classList.toggle('fan-mode', v === 'fan');
     if (v === 'fan') { fanFocus = selectedId && P(selectedId) && !P(selectedId).unknown ? selectedId : fanFocus; renderFan(); }
     try { localStorage.setItem(UI_KEY + '.view', v); } catch { /* ignore */ }
@@ -2028,9 +2154,9 @@
   // ------------------------------------------------------- card size
 
   function setCardSize(large, rerender = true) {
-    CARD_W = large ? 236 : 208;
-    CARD_H = large ? 132 : 76;
-    ROW_H = CARD_H + 124;
+    CARD_W = large ? 220 : 164;
+    CARD_H = large ? 118 : 66;
+    ROW_H = CARD_H + 108;
     document.body.classList.toggle('large-cards', large);
     $('[data-menu="cards"]').textContent = large ? 'Smaller profile cards' : 'Larger profile cards';
     try { localStorage.setItem(UI_KEY + '.large', large ? '1' : ''); } catch { /* ignore */ }
@@ -2042,14 +2168,28 @@
 
   $('#addPersonBtn').onclick = () => openEditor(null);
   const menu = $('#menu');
-  $('#menuBtn').onclick = (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; };
-  document.addEventListener('click', (e) => { if (!e.target.closest('.menu-wrap')) menu.hidden = true; });
+  // The menu lives outside the (frosted) top bar so it can float anywhere.
+  document.body.appendChild(menu);
+  function toggleMenu(show = menu.hidden) {
+    menu.hidden = !show;
+    document.body.classList.toggle('menu-open', show);
+    if (!show) return;
+    if (isPhone()) { menu.style.cssText = ''; return; }
+    const r = $('#menuBtn').getBoundingClientRect();
+    menu.style.cssText = `top:${r.bottom + 8}px;right:${innerWidth - r.right}px;left:auto;bottom:auto`;
+  }
+  $('#menuBtn').onclick = (e) => { e.stopPropagation(); toggleMenu(); };
+  document.addEventListener('click', (e) => { if (!e.target.closest('#menu, #menuBtn, [data-tab="more"]')) { menu.hidden = true; document.body.classList.remove('menu-open'); } });
   menu.addEventListener('click', (e) => {
     const b = e.target.closest('[data-menu]');
     if (!b) return;
     menu.hidden = true;
     switch (b.dataset.menu) {
       case 'cards': setCardSize(!document.body.classList.contains('large-cards')); break;
+      case 'siblings': toggleSiblings(); break;
+      case 'home': goHome(); break;
+      case 'undo': undo(); break;
+      case 'redo': redo(); break;
       case 'expand': collapsed.clear(); saveUI(); render(); fit(); break;
       case 'collapse': {
         const lay = computeLayout(currentScope());
@@ -2085,7 +2225,7 @@
       toast('Imported ' + f.name);
     } catch { toast('That file is not a valid family tree backup.'); }
   });
-  $('#scopeSelect').addEventListener('change', (e) => setScope(e.target.value));
+  $$('.scope-select').forEach((sel) => sel.addEventListener('change', (e) => { setScope(e.target.value); menu.hidden = true; }));
   $('#bannerClose').onclick = () => { $('#banner').dataset.closed = '1'; $('#banner').hidden = true; saveUI(); };
 
   $('#undoBtn').onclick = undo;
@@ -2111,6 +2251,19 @@
   }
 
   // ================================================================ boot
+  $('#homeBtn').onclick = () => { if (view === 'fan') setView('tree'); goHome(); };
+  $('#fabAdd').onclick = () => openEditor(null);
+  // Phone tab bar
+  $('#tabbar').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-tab]');
+    if (!b) return;
+    const t = b.dataset.tab;
+    if (t === 'home') { if (view === 'fan') setView('tree'); goHome(); }
+    else if (t === 'tree' || t === 'fan') setView(t);
+    else if (t === 'rel') openRelations(meId, null);
+    else if (t === 'share') openShare();
+    else if (t === 'more') { e.stopPropagation(); toggleMenu(); }
+  });
   $('#shareBtn').onclick = openShare;
   $('#syncPill').onclick = openShare;
 
@@ -2119,7 +2272,7 @@
     try { if (localStorage.getItem(UI_KEY + '.large')) setCardSize(true, false); } catch { /* ignore */ }
     render();
     try { if (localStorage.getItem(UI_KEY + '.view') === 'fan') setView('fan'); } catch { /* ignore */ }
-    fit(false, 0.5);
+    firstVisit ? goHome(false) : fit(false, readableZoom());
     startSharing();
   })();
 })();

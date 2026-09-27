@@ -50,11 +50,16 @@ The site is static files plus one small function, [`api/tree.js`](api/tree.js), 
 2. **Storage → Create → Blob**. Choose **Private** access and connect the store to the project. Then redeploy.
 3. Open the production address in the browser that has your tree. Click **Share**, choose a family passcode, then set your editor password and upload.
 4. Send the invite link, or tap **Send on WhatsApp**.
+5. To change the family passcode later, use Share → **Change the family passcode**. The old link stops working, and you send the new one.
 
 ## Views
 
-- **Tree:** everyone in one connected tree. The ⋯ menu offers **Larger profile cards**.
-- **Fan:** a person in the middle with their parents, grandparents and great-grandparents in rings around them, father's line on the left and mother's on the right. Click anyone to move them to the middle. As the editor, click an empty slot to add a missing parent.
+- **Home (🏠):** where the tree opens. It shows both sets of your grandparents and their children, with the Mohanty family above the Pattnaik family. Deeper branches start folded: tap **+N** under a couple to open their children. The Home button always brings you back.
+- **Tree:** everyone in one connected tree. Use **View** to pick one family, or **Everyone**.
+- **Hide siblings** (⋯ menu): shows only the direct line: you, your parents, grandparents and so on, plus your own children, without aunts, uncles and cousins.
+- **Fan:** a person in the middle with their parents, grandparents and great-grandparents in rings around them, father's line on the left and mother's on the right. Click anyone to move them to the middle.
+- **Larger profile cards** (⋯ menu). Cards show a photo only when one has been added; otherwise just the name.
+- **On phones:** search sits at the top, and a tab bar at the bottom holds Home, Tree, Fan, Relations, Share and More. The editor gets a round **+** button for adding people.
 
 ## Starter tree
 
