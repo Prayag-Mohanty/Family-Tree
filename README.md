@@ -28,30 +28,30 @@ To put it online, enable **GitHub Pages** for this repo (Settings → Pages → 
 
 ## Where the data lives
 
-Without sharing set up, edits are saved only in the browser you made them in. Use **⋯ → Export backup** to keep a copy, or to move the tree to another device with **Import backup**.
+Without sharing, edits are saved only in the browser you made them in. Use **⋯ → Export backup** to keep a copy, or to move the tree to another device with **Import backup**.
 
-With sharing set up (below), the tree lives in your own free Firebase database, and everyone with the family passcode sees and edits the same tree live.
+With sharing (below), the tree lives in a small database on your Vercel project. Everyone with the family passcode sees and edits the same tree, and changes appear for everyone within a few seconds.
 
-## Sharing with family
+## Sharing with family (Vercel)
+
+The site is static files plus one small API, [`api/tree.js`](api/tree.js), which stores the tree in a free Redis database. No build step and no packages.
 
 **Privacy:**
-- The family data can only be reached with the passcode. It is stretched into a long secret id that is the tree's only address, and the database rules forbid listing trees. Nothing is findable or searchable without it.
+- The family data can only be reached with the passcode. Your browser stretches the passcode into a long secret id. That id is the tree's only address, and there is no way to list trees.
 - Invite links carry the passcode after `#`, which browsers never send to any server. The site removes it from the address bar after opening.
-- The site tells search engines not to index it (`noindex`). A visitor without the passcode only sees a "family passcode" screen, with no names.
+- Search engines are told not to index the site (`noindex` headers, `robots.txt`). A visitor without the passcode only sees a "family passcode" screen, with no names.
 - Anyone who has the passcode can view and edit, so share it only with family. Pick a long one, e.g. four random words.
 
-**One-time setup (about 10 minutes, free):**
+**One-time setup (about 5 minutes, free):**
 
-1. Go to <https://console.firebase.google.com> and sign in with a Google account, then click **Create a project**. Any name works (e.g. `our-family-tree`). You can turn Google Analytics off.
-2. In the left menu open **Build → Firestore Database → Create database**. Choose a location near you (e.g. `asia-south1 (Mumbai)`), then **Start in production mode**.
-3. Open the **Rules** tab, replace everything with the contents of [`firestore.rules`](firestore.rules), and click **Publish**.
-4. Click the gear icon, then **Project settings → General → Your apps**. Click the **`</>`** (Web) icon, give it any nickname, and click **Register app**. Leave Firebase Hosting unticked.
-5. Copy the `firebaseConfig = { … }` values it shows into [`config.js`](config.js), replacing `firebase: null`. These values are not secret. Commit the change, or send them to whoever maintains the site.
-6. Make sure GitHub Pages serves the branch with these files (Settings → Pages).
-7. Open the site in the browser that has your tree, click **Share**, choose a passcode and click **Open**. Then choose **Upload my tree … and share it**.
-8. Copy the invite link, or tap **Send on WhatsApp**, and send it to family. They open it and see the tree. The passcode is remembered on their device, so they can add and edit people straight away.
+1. At <https://vercel.com/new>, import this GitHub repository. Framework preset: **Other**. No build command. Deploy.
+2. In the project, open **Storage → Create Database → Upstash for Redis** (free plan). Connect it to this project for all environments. This adds the `KV_REST_API_URL` and `KV_REST_API_TOKEN` settings the API reads.
+3. **Redeploy** (Deployments → ⋯ → Redeploy) so the API picks up the database.
+4. Share the **production** address (e.g. `your-project.vercel.app`). Preview addresses are protected by Vercel login by default, so relatives couldn't open them. Set your production branch under Settings → Git if needed.
+5. Open the production site in the browser that has your tree. Click **Share**, choose a passcode and click **Open**. Then choose **Upload my tree … and share it**. If your tree lives on another site address (e.g. GitHub Pages), first export a backup there and import it on the Vercel site.
+6. Copy the invite link, or tap **Send on WhatsApp**, and send it to family. They open it and see the tree. The passcode is remembered on their device, so they can add and edit people straight away.
 
-The free Firebase plan (50,000 reads and 20,000 writes a day) is far more than a family needs. Export a backup now and then from the ⋯ menu, in case someone deletes something by mistake.
+The free Upstash plan is far more than a family needs. Export a backup now and then from the ⋯ menu, in case someone deletes something by mistake.
 
 ## Starter tree
 
