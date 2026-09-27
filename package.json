@@ -1,0 +1,9 @@
+{
+  "name": "family-tree",
+  "private": true,
+  "description": "One connected family tree. Static site plus one Vercel function for sharing.",
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@vercel/blob": "^2.8.0"
+  }
+}

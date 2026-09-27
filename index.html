@@ -23,9 +23,15 @@
     </div>
   </div>
 
+  <div id="fanView" class="fan-view" aria-label="Fan chart of ancestors"></div>
+
   <!-- Top bar -->
   <header class="topbar glass">
     <div class="brand"><span class="logo" aria-hidden="true">❦</span><span class="brand-text">Family Tree</span></div>
+    <div class="view-seg" role="tablist" aria-label="View">
+      <button class="view-btn active" data-view="tree" role="tab">Tree</button>
+      <button class="view-btn" data-view="fan" role="tab">Fan</button>
+    </div>
     <label class="scope" id="scopeWrap" title="Show one family at a time">
       <span class="scope-lbl">View</span>
       <select id="scopeSelect" aria-label="Which family to show"></select>
@@ -46,6 +52,8 @@
       <div class="menu-wrap">
         <button class="btn icon" id="menuBtn" aria-label="More">⋯</button>
         <div class="menu glass-strong" id="menu" hidden>
+          <button data-menu="cards">Larger profile cards</button>
+          <hr>
           <button data-menu="expand">Expand all</button>
           <button data-menu="collapse">Collapse all</button>
           <hr>

@@ -140,7 +140,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* ---------- top bar ---------- */
 .topbar {
-  position: fixed; z-index: 10; top: 12px; left: 12px; right: 12px;
+  position: fixed; z-index: 30; top: 12px; left: 12px; right: 12px;
   display: flex; align-items: center; gap: 12px;
   padding: 8px 8px 8px 14px; border-radius: 10px;
 }
@@ -443,3 +443,55 @@ a.btn { text-decoration: none; color: inherit; }
 
 .rel-link { margin: -4px auto 0; max-width: 620px; text-align: center; font-size: 16px; color: var(--muted); font-style: italic; }
 .rel-link b, .rel-link em { color: var(--text); font-style: normal; }
+
+/* View-only visitors: hide everything that changes the tree */
+.readonly #addPersonBtn, .readonly .undo-group, .readonly [data-menu="reset"], .readonly #menu .as-btn,
+.readonly #panelBody [data-act]:not([data-act="relate"]):not([data-act="scope"]),
+.readonly [data-edit-term], .readonly #banner, .readonly #emptyAdd { display: none !important; }
+.setup-form { display: flex; flex-direction: column; gap: 8px; }
+
+/* ---------- Tree / Fan switch ---------- */
+.view-seg { display: flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; flex: none; }
+.view-btn { border: 0; background: transparent; padding: 0 14px; height: 36px; cursor: pointer; font: 500 15.5px var(--font); color: var(--muted); }
+.view-btn + .view-btn { border-left: 1px solid var(--border-strong); }
+.view-btn.active { color: var(--text); background: rgba(255, 255, 255, .7); box-shadow: inset 0 -2px 0 var(--gold); }
+
+/* ---------- fan view ---------- */
+.fan-view { position: fixed; inset: 0; z-index: 2; display: none; background: var(--bg); padding: 86px 16px 70px; }
+.fan-mode .fan-view { display: flex; flex-direction: column; align-items: center; }
+.fan-mode .viewport, .fan-mode .zoombar, .fan-mode #scopeWrap { display: none; }
+.fan-svg { flex: 1; width: 100%; min-height: 0; }
+.fan-svg .seg { fill: rgba(255, 255, 255, .55); stroke: var(--border-strong); stroke-width: 1.2; cursor: pointer; transition: fill .15s; }
+.fan-svg .seg.male { fill: color-mix(in srgb, var(--male) 7%, #fff); }
+.fan-svg .seg.female { fill: color-mix(in srgb, var(--female) 7%, #fff); }
+.fan-svg .seg:hover { fill: var(--gold-soft); stroke: var(--gold); }
+.fan-svg .seg.empty { fill: rgba(255, 255, 255, .3); stroke-dasharray: 3 4; stroke: var(--border); }
+.fan-svg .seg.empty[data-fan-add]:hover { fill: var(--gold-soft); }
+.fan-svg .seg.center { stroke: var(--gold); stroke-width: 1.5; }
+.fan-svg text { pointer-events: none; font-family: var(--font); fill: var(--text); }
+.fan-t { font-weight: 600; font-size: 15px; }
+.fan-t.g1 { font-size: 16px; } .fan-t.g3 { font-size: 13px; } .fan-t.g4 { font-size: 11.5px; } .fan-t.g5 { font-size: 10px; }
+.fan-sub { font-weight: 400; font-style: italic; font-size: 12.5px; fill: var(--muted) !important; }
+.fan-add { font-style: italic; font-size: 13px; fill: var(--faint) !important; }
+.fan-name { font-weight: 600; font-size: 16px; }
+.fan-ini { font-size: 34px; font-weight: 500; fill: var(--muted) !important; }
+.fan-center { cursor: pointer; }
+.fan-foot { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; justify-content: center; padding: 8px 14px; border-radius: 10px; font-size: 16px; max-width: 100%; }
+.fan-kids { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; color: var(--muted); }
+.fan-empty { margin: auto; color: var(--muted); font-style: italic; }
+
+/* ---------- larger profile cards ---------- */
+.large-cards .card {
+  width: 236px; height: 132px; flex-direction: column; justify-content: center; text-align: center;
+  gap: 6px; padding: 10px 12px;
+}
+.large-cards .card .av { width: 58px; height: 58px; font-size: 19px; }
+.large-cards .card .txt { flex: none; width: 100%; }
+.large-cards .card .nm { font-size: 17px; -webkit-line-clamp: 2; }
+.large-cards .card .sub { font-size: 14px; }
+.large-cards .card::before { top: 20px; bottom: 20px; }
+
+@media (max-width: 760px) {
+  .view-btn { padding: 0 10px; }
+  .fan-view { padding-top: 124px; }
+}

@@ -28,30 +28,33 @@ To put it online, enable **GitHub Pages** for this repo (Settings → Pages → 
 
 ## Where the data lives
 
-Without sharing, edits are saved only in the browser you made them in. Use **⋯ → Export backup** to keep a copy, or to move the tree to another device with **Import backup**.
+Without sharing, edits are saved only in the browser you made them in. Use **⋯ → Export backup** to keep a copy.
 
-With sharing (below), the tree lives in a small database on your Vercel project. Everyone with the family passcode sees and edits the same tree, and changes appear for everyone within a few seconds.
+With sharing (below), the tree is saved as one private file in Vercel Blob. The family can **view** it. Only you, the editor, can **change** it.
 
 ## Sharing with family (Vercel)
 
-The site is static files plus one small API, [`api/tree.js`](api/tree.js), which stores the tree in a free Redis database. No build step and no packages.
+The site is static files plus one small function, [`api/tree.js`](api/tree.js), which stores the tree in a private Vercel Blob store.
+
+**Who can do what:**
+- **Family passcode:** anyone you send the invite link to can view, search, see the fan chart and use Relations. They can't change anything; the edit buttons are hidden and the server refuses saves without the editor password.
+- **Editor password:** you choose it when you first upload, and only you know it. The server stores only a salted hash (scrypt) and checks it on every save. On another device of yours, open the invite link, then Share → **Unlock editing**.
 
 **Privacy:**
-- The family data can only be reached with the passcode. Your browser stretches the passcode into a long secret id. That id is the tree's only address, and there is no way to list trees.
-- Invite links carry the passcode after `#`, which browsers never send to any server. The site removes it from the address bar after opening.
-- Search engines are told not to index the site (`noindex` headers, `robots.txt`). A visitor without the passcode only sees a "family passcode" screen, with no names.
-- Anyone who has the passcode can view and edit, so share it only with family. Pick a long one, e.g. four random words.
+- The family passcode is stretched into a long secret id. That id is the tree's only address, the blob store is private, and there is no way to list trees.
+- Invite links carry the passcode after `#`, which browsers never send to any server. It's removed from the address bar on open.
+- Search engines are told not to index the site (`noindex` headers and `robots.txt`). Visitors without the passcode only see a passcode screen, with no names.
 
-**One-time setup (about 5 minutes, free):**
+**Setup:**
+1. Import this repository at <https://vercel.com/new> (preset **Other**).
+2. **Storage → Create → Blob**. Choose **Private** access and connect the store to the project. Then redeploy.
+3. Open the production address in the browser that has your tree. Click **Share**, choose a family passcode, then set your editor password and upload.
+4. Send the invite link, or tap **Send on WhatsApp**.
 
-1. At <https://vercel.com/new>, import this GitHub repository. Framework preset: **Other**. No build command. Deploy.
-2. In the project, open **Storage → Create Database → Upstash for Redis** (free plan). Connect it to this project for all environments. This adds the `KV_REST_API_URL` and `KV_REST_API_TOKEN` settings the API reads.
-3. **Redeploy** (Deployments → ⋯ → Redeploy) so the API picks up the database.
-4. Share the **production** address (e.g. `your-project.vercel.app`). Preview addresses are protected by Vercel login by default, so relatives couldn't open them. Set your production branch under Settings → Git if needed.
-5. Open the production site in the browser that has your tree. Click **Share**, choose a passcode and click **Open**. Then choose **Upload my tree … and share it**. If your tree lives on another site address (e.g. GitHub Pages), first export a backup there and import it on the Vercel site.
-6. Copy the invite link, or tap **Send on WhatsApp**, and send it to family. They open it and see the tree. The passcode is remembered on their device, so they can add and edit people straight away.
+## Views
 
-The free Upstash plan is far more than a family needs. Export a backup now and then from the ⋯ menu, in case someone deletes something by mistake.
+- **Tree:** everyone in one connected tree. The ⋯ menu offers **Larger profile cards**.
+- **Fan:** a person in the middle with their parents, grandparents and great-grandparents in rings around them, father's line on the left and mother's on the right. Click anyone to move them to the middle. As the editor, click an empty slot to add a missing parent.
 
 ## Starter tree
 

@@ -7,11 +7,11 @@
   const UI_KEY = 'familyTree.ui';
 
   // Layout metrics (world units = px at 100% zoom)
-  const CARD_W = 208, CARD_H = 76;
+  let CARD_W = 208, CARD_H = 76;  // larger with "Larger profile cards"
   const SPOUSE_GAP = 36;          // gap between spouses in a couple
   const SIB_GAP = 44;             // gap between sibling sub-trees
   const TREE_GAP = 140;           // gap between unconnected top-level families
-  const ROW_H = CARD_H + 124;     // vertical distance between generations
+  let ROW_H = CARD_H + 124;       // vertical distance between generations
   const PAD = 120;
 
   const $ = (s, r = document) => r.querySelector(s);
@@ -26,6 +26,7 @@
   let selectedId = null;
   let scopeId = null;            // when set, only this person's family is shown
   let meId = null;               // remembered by the relationship checker
+  let lastSelected = null;
   const cam = { x: 0, y: 0, k: 1 };
 
   // ================================================================ data
@@ -112,8 +113,8 @@
     if (relDlg.open) drawRelations();
     toast(`${verb}: ${snap.label}`);
   }
-  const undo = () => restore(undoStack, redoStack, 'Undid');
-  const redo = () => restore(redoStack, undoStack, 'Redid');
+  const undo = () => canEdit() && restore(undoStack, redoStack, 'Undid');
+  const redo = () => canEdit() && restore(redoStack, undoStack, 'Redid');
   function updateUndoButtons() {
     $('#undoBtn').disabled = !undoStack.length;
     $('#redoBtn').disabled = !redoStack.length;
@@ -128,7 +129,7 @@
   // Every change goes through here: kept in this browser, and sent to the shared tree when there is one.
   function save() {
     saveLocal();
-    pushChanges();
+    queuePush();
   }
   function saveUI() {
     try { localStorage.setItem(UI_KEY, JSON.stringify({ collapsed: [...collapsed], scopeId, meId, bannerClosed: $('#banner').dataset.closed === '1' })); } catch { /* ignore */ }
@@ -567,6 +568,7 @@
     } else if (total && empty) empty.remove();
 
     applySelection();
+    if (view === 'fan') renderFan();
   }
 
   function applySelection() {
@@ -773,6 +775,7 @@
   // el: the card that was clicked (a person can have two cards)
   function select(id, keepInView = true, el = null) {
     selectedId = id;
+    lastSelected = id;
     applySelection();
     renderPanel();
     if (keepInView) {
@@ -865,6 +868,7 @@
   });
 
   function deletePerson(id) {
+    if (!canEdit()) return;
     const p = P(id);
     const n = childrenOf(id).length;
     if (!p.unknown && !confirm(`Delete ${p.name}?` + (n ? `\n\nTheir ${n} child(ren) stay in the tree, just without this parent.` : ''))) return;
@@ -986,6 +990,7 @@
   }
 
   function openEditor(id, preset = {}, extra = {}) {
+    if (!canEdit()) return;
     const base = id ? P(id) : blankPerson(preset);
     editing = { id: base.id, isNew: !id, childOf: extra.childOf || null, photo: base.photo, oldSibs: id ? siblingsOf(id) : [] };
     $('#editTitle').textContent = base.unknown ? 'Add the parent’s name' : id ? `Edit ${base.name}` : 'Add person';
@@ -1555,7 +1560,7 @@
     const row = e.target.closest('[data-rel-b]');
     if (row) { openRelations(relPair[0], row.dataset.relB); relDlg.scrollTop = 0; return; }
     const ed = e.target.closest('[data-edit-term]');
-    if (ed) {
+    if (ed && canEdit()) {
       const { a, b } = ed.dataset;
       const who = `${P(a).name.split(' ')[0]} calls ${P(b).name}`;
       const hi = prompt(`What ${who} in Hindi:`, ed.dataset.hi);
@@ -1575,22 +1580,28 @@
 
   // ============================================================ sharing
   //
-  // Live sharing through the site's own API (api/tree.js on Vercel, backed
-  // by a Redis database). Everyone who knows the family passcode reads and
-  // edits the same tree. The passcode is stretched with PBKDF2 into the
-  // tree's id, the only address of the data; nothing can be listed. Invite
+  // The family can view one shared tree; only its owner edits it. The tree
+  // is stored by the site's API (api/tree.js, Vercel Blob). The family
+  // passcode is stretched with PBKDF2 into the tree's id, its only address;
+  // saving also needs the editor password, which the server checks. Invite
   // links carry the passcode after '#', which browsers never send to servers.
 
   const SHARE_KEY = 'familyTree.share';
-  const POLL_MS = 4000;
+  const POLL_MS = 30000;
   const sync = {
     status: 'local',          // local | connecting | live | error
     available: null,          // null = unknown, 'yes', 'no-storage', 'no-api'
-    treeId: null, passcode: null, version: 0,
-    base: null,               // what the server has: { people: {id: json}, terms: json }
-    pushing: null, timer: null, error: '', offline: false,
+    treeId: null, passcode: null, owner: null,   // owner = editor password, once accepted
+    etag: null, version: 0, timer: null, pushTimer: null, pushing: null, dirty: false, offline: false, error: '',
   };
   const sharingSetUp = () => sync.available === 'yes';
+  const canEdit = () => sync.status !== 'live' || !!sync.owner;
+
+  function applyMode() {
+    const ro = !canEdit();
+    document.body.classList.toggle('readonly', ro);
+    if (ro && dlg.open) dlg.close();
+  }
 
   async function checkAvailable() {
     if (sync.available) return sync.available;
@@ -1611,15 +1622,18 @@
     return [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, '0')).join('');
   }
 
-  async function api(method, body, query = '') {
-    const r = await fetch(`api/tree?id=${sync.treeId}${query}`, {
-      method, cache: 'no-store',
-      headers: body ? { 'Content-Type': 'application/json' } : {},
-      body: body ? JSON.stringify(body) : undefined,
-    });
+  async function getTree(conditional) {
+    const r = await fetch(`api/tree?id=${sync.treeId}`, { cache: 'no-store', headers: conditional && sync.etag ? { 'If-None-Match': sync.etag } : {} });
     if (r.status === 404) return { notFound: true };
+    if (r.status === 304) return { unchanged: true };
     if (!r.ok) throw new Error('HTTP ' + r.status);
+    sync.etag = r.headers.get('ETag');
     return r.json();
+  }
+  async function postTree(body) {
+    const r = await fetch(`api/tree?id=${sync.treeId}`, { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    return { status: r.status, ...j };
   }
 
   function setStatus(status, error = '') {
@@ -1629,29 +1643,36 @@
     const text = {
       local: sharingSetUp() ? 'Only on this device' : '',
       connecting: 'Connecting…',
-      live: sync.offline ? 'Offline · will sync' : 'Shared · live',
+      live: sync.offline ? 'Offline' : sync.owner ? 'Shared · you’re the editor' : 'Shared · view only',
       error: 'Sharing error',
     }[status];
     pill.hidden = !text;
     pill.dataset.status = status;
     pill.innerHTML = `<span class="dot"></span>${esc(text)}`;
-    $('[data-menu="reset"]').hidden = status === 'live';
+    applyMode();
     if ($('#shareDialog').open) drawShare();
   }
+  function setOffline(v) { if (sync.offline !== v) { sync.offline = v; setStatus(sync.status, sync.error); } }
 
-  const snapshotOf = (s) => ({
-    people: Object.fromEntries(Object.entries(s.people).map(([id, p]) => [id, JSON.stringify(p)])),
-    terms: JSON.stringify(s.terms || {}),
-  });
+  function remember_() {
+    try { localStorage.setItem(SHARE_KEY, JSON.stringify({ passcode: sync.passcode, owner: sync.owner })); } catch { /* ignore */ }
+  }
 
   // Open the tree for a passcode. Returns 'live', 'empty' (no tree uses it yet) or 'error'.
-  async function connect(passcode) {
+  async function connect(passcode, ownerPassword = null) {
     setStatus('connecting');
     try {
       sync.treeId = await deriveTreeId(passcode);
-      const data = await api('GET');
+      sync.etag = null;
+      const data = await getTree(false);
       if (data.notFound) { setStatus('local'); return 'empty'; }
-      startLive(passcode, data);
+      sync.passcode = passcode;
+      sync.owner = null;
+      if (ownerPassword) {
+        const v = await postTree({ password: ownerPassword, verify: true });
+        if (v.status === 200) sync.owner = ownerPassword;
+      }
+      startLive(data);
       return 'live';
     } catch (err) {
       console.error(err);
@@ -1660,9 +1681,9 @@
     }
   }
 
-  function startLive(passcode, data) {
-    sync.passcode = passcode;
-    try { localStorage.setItem(SHARE_KEY, JSON.stringify({ passcode })); } catch { /* ignore */ }
+  function startLive(data) {
+    remember_();
+    sync.status = 'live';
     applyRemote(data, true);
     setStatus('live');
     clearInterval(sync.timer);
@@ -1671,22 +1692,17 @@
 
   function stopLive() {
     clearInterval(sync.timer);
-    sync.timer = null;
-    sync.base = null;
-    sync.passcode = null;
-    sync.version = 0;
+    Object.assign(sync, { timer: null, passcode: null, owner: null, etag: null, version: 0, dirty: false });
     try { localStorage.removeItem(SHARE_KEY); } catch { /* ignore */ }
     setStatus('local');
   }
 
-  // Show what the server has.
   function applyRemote(data, first = false) {
-    sync.version = data.version;
+    if (!first && data.version && data.version <= sync.version) return;
+    sync.version = data.version || 0;
     const next = normalize({ people: data.people || {}, terms: data.terms || {} });
-    sync.base = snapshotOf(next);
     if (JSON.stringify(next) !== JSON.stringify(state)) {
       state = next;
-      // Undo history no longer matches what everyone sees.
       if (!first) { undoStack.length = 0; redoStack.length = 0; }
       saveLocal();
       render();
@@ -1696,76 +1712,69 @@
     if (first) fit(false, 0.5);
   }
 
-  // Send our unsent changes first, then pick up everyone else's.
   async function poll() {
     if (sync.status !== 'live' || document.hidden) return;
-    const ok = await pushChanges();
-    if (!ok) return;
+    if (sync.dirty) { await pushChanges(); return; }
     try {
-      const data = await api('GET', null, `&since=${sync.version}`);
+      const data = await getTree(true);
       setOffline(false);
-      if (data.notFound || data.unchanged) return;
-      // An edit made while this request was out is sent first; take the update next round.
-      if (sync.pushing || JSON.stringify(snapshotOf(state)) !== JSON.stringify(sync.base)) return;
+      if (data.unchanged || data.notFound || sync.dirty || sync.pushing) return;
       applyRemote(data);
     } catch { setOffline(true); }
   }
-  function setOffline(v) { if (sync.offline !== v) { sync.offline = v; setStatus(sync.status, sync.error); } }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
   addEventListener('online', () => poll());
 
-  // Write only the people that differ from what the server has. Returns false if it couldn't.
+  // The editor's changes are saved a moment after the last edit.
+  function queuePush() {
+    if (sync.status !== 'live' || !sync.owner) return;
+    sync.dirty = true;
+    clearTimeout(sync.pushTimer);
+    sync.pushTimer = setTimeout(pushChanges, 800);
+  }
   async function pushChanges() {
-    if (sync.status !== 'live' || !sync.base) return true;
-    if (sync.pushing) { await sync.pushing; return pushChanges(); }
-    const now = snapshotOf(state);
-    const set = {}, del = [];
-    for (const [id, j] of Object.entries(now.people)) if (sync.base.people[id] !== j) set[id] = state.people[id];
-    for (const id of Object.keys(sync.base.people)) if (!(id in now.people)) del.push(id);
-    const termsChanged = now.terms !== sync.base.terms;
-    if (!Object.keys(set).length && !del.length && !termsChanged) return true;
+    if (!sync.dirty || !sync.owner) return true;
+    if (sync.pushing) return sync.pushing;
     sync.pushing = (async () => {
+      sync.dirty = false;
       try {
-        // Keep each request small (photos make people heavy).
-        const ids = Object.keys(set);
-        let chunk = {}, size = 0;
-        const flush = async (last) => {
-          const r = await api('POST', { set: chunk, del: last ? del : [], terms: last && termsChanged ? state.terms : undefined });
-          sync.version = r.version;
-          chunk = {}; size = 0;
-        };
-        for (const id of ids) {
-          chunk[id] = set[id];
-          size += now.people[id].length;
-          if (size > 700000) await flush(false);
+        const r = await postTree({ password: sync.owner, tree: { people: state.people, terms: state.terms || {} } });
+        if (r.status === 403) {
+          sync.owner = null; remember_(); setStatus('live');
+          toast('Your editor password was not accepted, so this device is now view only.');
+          return false;
         }
-        await flush(true);
-        sync.base = now;
+        if (r.status !== 200) throw new Error('HTTP ' + r.status);
+        sync.version = r.version;
+        sync.etag = null;
         setOffline(false);
         return true;
       } catch (err) {
         console.error(err);
+        sync.dirty = true;
         setOffline(true);
         return false;
       } finally { sync.pushing = null; }
     })();
     return sync.pushing;
   }
+  addEventListener('beforeunload', (e) => { if (sync.dirty || sync.pushing) { pushChanges(); e.preventDefault(); } });
 
-  // First upload of this browser's tree under a new passcode.
-  async function uploadAndShare(passcode) {
+  // First upload of this browser's tree: sets the family passcode and editor password.
+  async function uploadAndShare(passcode, password) {
     setStatus('connecting');
     try {
       sync.treeId = await deriveTreeId(passcode);
-      sync.base = { people: {}, terms: '' };
-      sync.status = 'live';
-      const ok = await pushChanges();
-      if (!ok) throw new Error('upload failed');
-      startLive(passcode, await api('GET'));
+      const r = await postTree({ password, tree: { people: state.people, terms: state.terms || {} } });
+      if (r.status === 403) { setStatus('error', 'That passcode is already used by a tree with a different editor password.'); return false; }
+      if (r.status !== 200) throw new Error('HTTP ' + r.status);
+      sync.passcode = passcode;
+      sync.owner = password;
+      sync.etag = null;
+      startLive(await getTree(false));
       return true;
     } catch (err) {
       console.error(err);
-      sync.base = null;
       setStatus('error', 'Upload failed. Check your connection and try again.');
       return false;
     }
@@ -1785,53 +1794,76 @@
       body.innerHTML = sync.available === 'no-api'
         ? `<p>Sharing works on the Vercel version of this site. This copy can’t reach the family database.</p>
            <p class="muted">Until then, your tree lives only in this browser. Use ⋯ → Export backup to keep a copy, then Import backup on the Vercel site.</p>`
-        : `<p>Almost there. In your Vercel project, open <em>Storage</em>, create a free <em>Upstash for Redis</em> database, connect it to this project and redeploy. The steps are in the README.</p>`;
+        : `<p>Almost there. The Vercel project needs its Blob store connected. The steps are in the README.</p>`;
       return;
     }
     if (sync.status === 'live') {
       const link = inviteLink();
-      const msg = `Our family tree: ${link}`;
-      body.innerHTML = `<p class="share-live"><span class="dot"></span> Shared with your family. Changes anyone makes show up for everyone within a few seconds.</p>
-        <div class="f">Invite link (includes the passcode)
+      body.innerHTML = `<p class="share-live"><span class="dot"></span> ${sync.owner
+        ? 'You’re the editor on this device. Your changes are saved for everyone.'
+        : 'You’re viewing the family tree. Only its editor can make changes.'}</p>
+        <div class="f">Invite link for family (view only)
           <div class="copy-row"><input class="pk-input" id="inviteLink" readonly value="${esc(link)}"><button class="btn" id="copyInvite">Copy</button></div>
         </div>
         <div class="share-actions">
-          <a class="btn" href="https://wa.me/?text=${encodeURIComponent(msg)}" target="_blank" rel="noopener">Send on WhatsApp</a>
+          <a class="btn" href="https://wa.me/?text=${encodeURIComponent('Our family tree: ' + link)}" target="_blank" rel="noopener">Send on WhatsApp</a>
           <button class="btn ghost danger" id="leaveShare">Stop using the shared tree on this device</button>
         </div>
-        <p class="muted">Anyone with this link or the passcode can see and edit the tree, so send it only to family. It isn’t listed anywhere and search engines are told not to index this site. Export a backup now and then (⋯ menu), just in case.</p>`;
+        ${sync.owner ? '' : `<form id="unlockForm" class="join-row">
+          <input class="pk-input" id="unlockCode" type="password" autocomplete="current-password" placeholder="Editor password (only if you’re the editor)">
+          <button class="btn" type="submit">Unlock editing</button>
+        </form>`}
+        <p class="muted">Anyone with this link can see the tree, so send it only to family. It isn’t listed anywhere and search engines are told not to index this site. ${sync.owner ? 'Keep your editor password to yourself. Export a backup now and then (⋯ menu).' : ''}</p>`;
       $('#copyInvite').onclick = async () => {
         try { await navigator.clipboard.writeText(link); toast('Invite link copied'); }
         catch { $('#inviteLink').select(); toast('Press Ctrl+C to copy'); }
       };
       $('#leaveShare').onclick = () => {
-        if (!confirm('Stop showing the shared tree on this device? The shared tree stays online for everyone else, and this browser keeps a copy.')) return;
+        if (!confirm('Stop showing the shared tree on this device? It stays online for everyone else, and this browser keeps a copy.')) return;
         stopLive(); drawShare(); toast('This device is no longer connected');
       };
+      $('#unlockForm')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const pw = $('#unlockCode').value;
+        const v = await postTree({ password: pw, verify: true });
+        if (v.status === 200) { sync.owner = pw; remember_(); setStatus('live'); toast('Editing unlocked on this device'); }
+        else toast('That editor password isn’t right');
+      });
       return;
     }
     if (shareStep?.empty) {
       const n = realPeople().length;
       body.innerHTML = `<p>No family tree uses that passcode yet.</p>
-        <p class="muted">If a relative sent you the passcode, check it was typed exactly and try again. If you’re setting up sharing for the first time, upload the tree from this browser.</p>
-        <div class="share-actions">
-          <button class="btn" id="shareRetry">Try another passcode</button>
-          ${hasOwnData() ? `<button class="btn primary" id="shareUpload">Upload my tree (${n} people) and share it</button>` : ''}
-        </div>`;
+        <p class="muted">If a relative sent you the passcode, check it was typed exactly and try again.</p>
+        ${hasOwnData() ? `<p><b>Setting up sharing?</b> Choose an editor password. Only someone with it can change the tree, so keep it to yourself.</p>
+        <form id="setupForm" class="setup-form">
+          <input class="pk-input" id="setupPw" type="password" autocomplete="new-password" placeholder="Editor password (only you)" required>
+          <input class="pk-input" id="setupPw2" type="password" autocomplete="new-password" placeholder="Type it again" required>
+          <div class="share-actions">
+            <button class="btn" type="button" id="shareRetry">Try another passcode</button>
+            <button class="btn primary" type="submit">Upload my tree (${n} people) and share it</button>
+          </div>
+        </form>` : '<div class="share-actions"><button class="btn" id="shareRetry">Try another passcode</button></div>'}
+        ${sync.status === 'error' ? `<p class="share-error">${esc(sync.error)}</p>` : ''}`;
       $('#shareRetry').onclick = () => { shareStep = null; drawShare(); };
-      $('#shareUpload')?.addEventListener('click', async () => {
-        const ok = await uploadAndShare(shareStep.empty);
+      $('#setupForm')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const a = $('#setupPw').value, b = $('#setupPw2').value;
+        if (a.length < 8) { toast('Use at least 8 characters for the editor password'); return; }
+        if (a !== b) { toast('The two passwords don’t match'); return; }
+        if (a.trim().toLowerCase() === shareStep.empty.trim().toLowerCase()) { toast('Use a different password from the family passcode'); return; }
+        const ok = await uploadAndShare(shareStep.empty, a);
         if (ok) { shareStep = null; drawShare(); toast('Your tree is now shared'); }
       });
       return;
     }
-    body.innerHTML = `<p>Enter your family passcode to open the shared tree.</p>
+    body.innerHTML = `<p>Enter the family passcode to open the family tree.</p>
       <form id="joinForm" class="join-row">
         <input class="pk-input" id="joinCode" type="password" autocomplete="off" placeholder="Family passcode" required>
         <button class="btn primary" type="submit">${sync.status === 'connecting' ? 'Opening…' : 'Open'}</button>
       </form>
       ${sync.status === 'error' ? `<p class="share-error">${esc(sync.error)}</p>` : ''}
-      <p class="muted">Setting it up for the first time? Choose a long passcode that’s easy to say out loud, like four random words (“mango river silver kite”). Anyone who knows it can see and edit the tree.</p>`;
+      <p class="muted">Setting it up for the first time? Choose a family passcode that’s easy to say out loud, like four random words (“mango river silver kite”). Family use it to view the tree. You’ll set a separate editor password next.</p>`;
     $('#joinForm').onsubmit = async (e) => {
       e.preventDefault();
       const code = $('#joinCode').value;
@@ -1839,7 +1871,7 @@
       const res = await connect(code);
       if (res === 'empty') shareStep = { empty: code };
       drawShare();
-      if (res === 'live') { shareDlg.close(); toast('Opened the shared family tree'); }
+      if (res === 'live') { shareDlg.close(); toast('Opened the family tree'); }
     };
     setTimeout(() => $('#joinCode')?.focus(), 30);
   }
@@ -1856,18 +1888,153 @@
   // Start sharing on load: an invite link (#join=…) or a remembered passcode.
   async function startSharing() {
     const m = location.hash.match(/(?:^#|&)join=([^&]+)/);
-    let code = m ? decodeURIComponent(m[1]) : null;
+    let code = m ? decodeURIComponent(m[1]) : null, owner = null;
     if (m) history.replaceState(null, '', location.pathname + location.search);   // keep the passcode out of the address bar
-    if (await checkAvailable() !== 'yes') { setStatus('local'); if (code) openShare(); return; }
-    if (!code) { try { code = JSON.parse(localStorage.getItem(SHARE_KEY) || 'null')?.passcode || null; } catch { /* ignore */ } }
+    try {
+      const saved = JSON.parse(localStorage.getItem(SHARE_KEY) || 'null');
+      if (!code) code = saved?.passcode || null;
+      if (saved?.passcode === code) owner = saved?.owner || null;
+    } catch { /* ignore */ }
+    if (await checkAvailable() !== 'yes') { setStatus('local'); if (m) openShare(); return; }
     if (!code) {
       setStatus('local');
       if (!hasOwnData()) openShare();      // a visitor without the passcode sees no family data
       return;
     }
-    const res = await connect(code);
+    const res = await connect(code, owner);
     if (res === 'empty') { shareStep = { empty: code }; drawShare(); shareDlg.showModal(); }
     else if (res === 'error') openShare();
+  }
+
+
+  // ============================================================ fan view
+  //
+  // A person in the middle and their ancestors in rings around them:
+  // parents, grandparents, great-grandparents… Father's line on the left,
+  // mother's on the right. Click anyone to put them in the middle.
+
+  let view = 'tree';           // tree | fan
+  let fanFocus = null;
+  const FAN_GENS = 5, FAN_R0 = 92, FAN_RING = 86, FAN_SPAN = 220;   // degrees
+
+  const polar = (r, deg) => { const a = (deg - 90) * Math.PI / 180; return [r * Math.cos(a), r * Math.sin(a)]; };
+  function arcPath(r1, r2, a1, a2) {
+    const large = a2 - a1 > 180 ? 1 : 0;
+    const [x1, y1] = polar(r2, a1), [x2, y2] = polar(r2, a2), [x3, y3] = polar(r1, a2), [x4, y4] = polar(r1, a1);
+    return `M${x1},${y1}A${r2},${r2} 0 ${large} 1 ${x2},${y2}L${x3},${y3}A${r1},${r1} 0 ${large} 0 ${x4},${y4}Z`;
+  }
+  // Father first, then mother (unknown genders keep their order).
+  function orderedParents(id) {
+    const ps = P(id).parents.filter((x) => P(x) && !P(x).unknown);
+    return ps.sort((a, b) => (G(a) === 'f') - (G(b) === 'f'));
+  }
+
+  function fanDefaultFocus() {
+    if (fanFocus && P(fanFocus)) return fanFocus;
+    if (selectedId && P(selectedId) && !P(selectedId).unknown) return selectedId;
+    if (lastSelected && P(lastSelected)) return lastSelected;
+    if (meId && P(meId)) return meId;
+    // someone with the most known ancestors
+    const depth = (id, d = 0) => (d > 6 ? 0 : 1 + Math.max(0, ...orderedParents(id).map((p) => depth(p, d + 1))));
+    return realPeople().map((p) => p.id).sort((a, b) => depth(b) - depth(a))[0] || null;
+  }
+
+  function renderFan() {
+    const host = $('#fanView');
+    const focus = fanFocus = fanDefaultFocus();
+    if (!focus) { host.innerHTML = '<div class="fan-empty">Add some people first.</div>'; return; }
+    const parts = [];
+    const start = -FAN_SPAN / 2;
+    const clipDefs = [];
+    // slot list per generation: [id or null, childId, parentIndex]
+    let slots = [{ id: focus }];
+    let maxG = 0;
+    for (let g = 1; g <= FAN_GENS; g++) {
+      const next = [];
+      for (const s of slots) {
+        const ps = s.id ? orderedParents(s.id) : [];
+        const f = ps.find((x) => G(x) !== 'f') || null, m = ps.find((x) => x !== f) || null;
+        next.push({ id: f, child: s.id, role: 'father' }, { id: m, child: s.id, role: 'mother' });
+      }
+      slots = next;
+      if (!slots.some((s) => s.id || s.child)) break;
+      maxG = g;
+      const r1 = FAN_R0 + (g - 1) * FAN_RING, r2 = r1 + FAN_RING - 4;
+      const step = FAN_SPAN / slots.length;
+      slots.forEach((s, i) => {
+        const a1 = start + i * step + 0.6, a2 = start + (i + 1) * step - 0.6;
+        if (!s.id && !s.child) return;
+        const p = s.id && P(s.id);
+        const mid = (a1 + a2) / 2, rm = (r1 + r2) / 2;
+        const cls = p ? `seg ${p.gender}` : 'seg empty';
+        parts.push(`<path class="${cls}" d="${arcPath(r1, r2, a1, a2)}" ${p ? `data-fan="${esc(s.id)}"` : s.child && canEdit() ? `data-fan-add="${esc(s.child)}"` : ''}><title>${esc(p ? p.name : 'Add ' + s.role)}</title></path>`);
+        // label: upright near the middle, radial further out
+        const [tx, ty] = polar(rm, mid);
+        const words = p ? p.name.split(/\s+/) : [];
+        if (p) {
+          const arcLen = (Math.PI * rm * (a2 - a1)) / 180;
+          if (g <= 2) {
+            const lines = [words[0], words.slice(1).join(' ')].filter(Boolean);
+            const sub = years(p) || p.nickname || '';
+            parts.push(`<text class="fan-t g${g}" x="${tx}" y="${ty - (lines.length - 1) * 8 - (sub ? 6 : 0)}" text-anchor="middle">${lines.map((l, k) => `<tspan x="${tx}" dy="${k ? 16 : 0}">${esc(l)}</tspan>`).join('')}${sub ? `<tspan class="fan-sub" x="${tx}" dy="16">${esc(sub)}</tspan>` : ''}</text>`);
+          } else {
+            let rot = mid; let flip = mid > 0;
+            const label = arcLen < 20 ? '' : (arcLen < 34 ? words[0] : p.name);
+            if (label) parts.push(`<text class="fan-t g${g}" transform="translate(${tx},${ty}) rotate(${flip ? rot - 90 : rot + 90})" text-anchor="middle" dy="4">${esc(label.length > 16 ? label.slice(0, 15) + '…' : label)}</text>`);
+          }
+        } else if (s.child && canEdit() && g <= 3) {
+          parts.push(`<text class="fan-add" x="${tx}" y="${ty + 5}" text-anchor="middle">+ ${s.role}</text>`);
+        }
+      });
+    }
+    // the person in the middle
+    const fp = P(focus);
+    clipDefs.push(`<clipPath id="fanClip"><circle r="${FAN_R0 - 34}" cy="-18"/></clipPath>`);
+    const photo = fp.photo ? `<image href="${esc(fp.photo)}" x="${-(FAN_R0 - 34)}" y="${-(FAN_R0 - 34) - 18}" width="${2 * (FAN_R0 - 34)}" height="${2 * (FAN_R0 - 34)}" clip-path="url(#fanClip)" preserveAspectRatio="xMidYMid slice"/>`
+      : `<text class="fan-ini" y="-6" text-anchor="middle">${esc(initials(fp))}</text>`;
+    parts.push(`<g class="fan-center" data-fan="${esc(focus)}"><circle class="seg center ${fp.gender}" r="${FAN_R0 - 4}"/>${photo}
+      <text class="fan-name" y="${FAN_R0 - 38}" text-anchor="middle">${esc(fp.name.length > 20 ? fp.name.split(' ')[0] : fp.name)}</text></g>`);
+    const R = FAN_R0 + Math.max(1, maxG) * FAN_RING;
+    const kids = childrenOf(focus).filter((c) => !P(c).unknown);
+    host.innerHTML = `<svg class="fan-svg" viewBox="${-R - 10} ${-R - 10} ${2 * R + 20} ${R + FAN_R0 + 30}" preserveAspectRatio="xMidYMid meet">
+        <defs>${clipDefs.join('')}</defs>${parts.join('')}</svg>
+      <div class="fan-foot glass">
+        <span class="fan-title">Ancestors of <b>${esc(fp.name)}</b></span>
+        ${kids.length ? `<span class="fan-kids">Children: ${kids.map((c) => `<button class="chip" data-fan="${esc(c)}">${avatar(P(c), 'sm')}${esc(P(c).name)}</button>`).join('')}</span>` : ''}
+      </div>`;
+  }
+
+  $('#fanView').addEventListener('click', (e) => {
+    const add = e.target.closest('[data-fan-add]');
+    if (add && canEdit()) { openEditor(null, { spouses: orderedParents(add.dataset.fanAdd).slice(0, 1) }, { childOf: add.dataset.fanAdd }); return; }
+    const t = e.target.closest('[data-fan]');
+    if (!t) return;
+    const id = t.dataset.fan;
+    if (id === fanFocus) { select(id, false); return; }
+    fanFocus = id;
+    renderFan();
+    select(id, false);
+  });
+
+  function setView(v) {
+    view = v;
+    $$('.view-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
+    document.body.classList.toggle('fan-mode', v === 'fan');
+    if (v === 'fan') { fanFocus = selectedId && P(selectedId) && !P(selectedId).unknown ? selectedId : fanFocus; renderFan(); }
+    try { localStorage.setItem(UI_KEY + '.view', v); } catch { /* ignore */ }
+  }
+  $$('.view-btn').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+
+  // ------------------------------------------------------- card size
+
+  function setCardSize(large, rerender = true) {
+    CARD_W = large ? 236 : 208;
+    CARD_H = large ? 132 : 76;
+    ROW_H = CARD_H + 124;
+    document.body.classList.toggle('large-cards', large);
+    $('[data-menu="cards"]').textContent = large ? 'Smaller profile cards' : 'Larger profile cards';
+    try { localStorage.setItem(UI_KEY + '.large', large ? '1' : ''); } catch { /* ignore */ }
+    if (rerender) { render(); fit(); }
   }
 
 
@@ -1882,6 +2049,7 @@
     if (!b) return;
     menu.hidden = true;
     switch (b.dataset.menu) {
+      case 'cards': setCardSize(!document.body.classList.contains('large-cards')); break;
       case 'expand': collapsed.clear(); saveUI(); render(); fit(); break;
       case 'collapse': {
         const lay = computeLayout(currentScope());
@@ -1898,6 +2066,7 @@
         break;
       }
       case 'reset':
+        if (!canEdit()) return;
         if (!confirm('Replace everything with the starter tree? Export a backup first if you want to keep your data.')) return;
         remember('reset'); state = starterTree(); collapsed.clear(); scopeId = null; closePanel(); save(); saveUI(); render(); fit();
         toast('Reset to starter tree');
@@ -1908,7 +2077,7 @@
     const f = e.target.files[0];
     e.target.value = '';
     menu.hidden = true;
-    if (!f) return;
+    if (!f || !canEdit()) return;
     try {
       const data = normalize(JSON.parse(await f.text()));
       if (!confirm(`Replace the current tree (${realPeople().length} people) with this file (${Object.values(data.people).filter((p) => !p.unknown).length} people)?` + (sync.status === 'live' ? '\n\nThis is the shared tree, so it changes for everyone in the family.' : ''))) return;
@@ -1947,7 +2116,9 @@
 
   (async () => {
     await load();
+    try { if (localStorage.getItem(UI_KEY + '.large')) setCardSize(true, false); } catch { /* ignore */ }
     render();
+    try { if (localStorage.getItem(UI_KEY + '.view') === 'fan') setView('fan'); } catch { /* ignore */ }
     fit(false, 0.5);
     startSharing();
   })();
