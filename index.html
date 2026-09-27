@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Family Tree</title>
+  <meta name="description" content="Your family tree, with names, what you call everyone, and how they're related to you.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌳</text></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🌳 <span>Family Tree</span></div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="tree" role="tab">Tree</button>
+      <button class="tab" data-view="people" role="tab">People</button>
+      <button class="tab" data-view="quiz" role="tab">Quiz me</button>
+    </nav>
+    <div class="search-wrap">
+      <input id="search" type="search" placeholder="Search name, nickname, city, notes…" autocomplete="off">
+    </div>
+    <div class="menu">
+      <button class="btn primary" id="addPersonBtn">+ Add person</button>
+      <details class="dropdown">
+        <summary class="btn">⋯</summary>
+        <div class="dropdown-menu">
+          <button id="exportBtn">⬇ Export backup (JSON)</button>
+          <label class="as-button">⬆ Import backup<input type="file" id="importInput" accept="application/json,.json" hidden></label>
+          <button id="printBtn">🖨 Print tree</button>
+          <hr>
+          <button id="resetBtn" class="danger-text">↺ Reset to starter tree</button>
+        </div>
+      </details>
+    </div>
+  </header>
+
+  <main>
+    <!-- TREE VIEW -->
+    <section id="view-tree" class="view active">
+      <div class="toolbar">
+        <label>Show
+          <select id="rootSelect"></select>
+        </label>
+        <div class="zoom">
+          <button class="btn small" id="zoomOut" aria-label="Zoom out">−</button>
+          <span id="zoomLabel">100%</span>
+          <button class="btn small" id="zoomIn" aria-label="Zoom in">+</button>
+          <button class="btn small" id="findMe">◎ Find me</button>
+        </div>
+      </div>
+      <div id="placeholderBanner" class="banner" hidden>
+        Names like “Father’s Elder Brother” are placeholders. Tap anyone to enter their real name and what you call them.
+      </div>
+      <div id="treeScroll" class="tree-scroll">
+        <div id="treeCanvas" class="tree-canvas"></div>
+      </div>
+    </section>
+
+    <!-- PEOPLE VIEW -->
+    <section id="view-people" class="view">
+      <div id="peopleList"></div>
+    </section>
+
+    <!-- QUIZ VIEW -->
+    <section id="view-quiz" class="view">
+      <div class="quiz-wrap">
+        <div class="quiz-head">
+          <div class="seg">
+            <button class="seg-btn active" data-mode="name">Guess the name</button>
+            <button class="seg-btn" data-mode="relation">Guess the relation</button>
+          </div>
+          <div class="score" id="quizScore">Score 0 / 0</div>
+        </div>
+        <div id="quizCard" class="quiz-card"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- DETAIL DRAWER -->
+  <aside id="drawer" class="drawer" aria-hidden="true">
+    <button class="icon-btn close" id="drawerClose" aria-label="Close">✕</button>
+    <div id="drawerBody"></div>
+  </aside>
+
+  <!-- EDIT MODAL -->
+  <dialog id="editDialog">
+    <form id="editForm" method="dialog">
+      <h2 id="editTitle">Add person</h2>
+      <div class="photo-row">
+        <div id="photoPreview" class="avatar lg"></div>
+        <div>
+          <label class="btn small as-button">Choose photo<input type="file" id="photoInput" accept="image/*" hidden></label>
+          <button type="button" class="btn small" id="photoRemove">Remove</button>
+        </div>
+      </div>
+      <div class="grid2">
+        <label>Full name *<input name="name" required></label>
+        <label>What I call them<input name="callName" placeholder="e.g. Bada Bapa, Mausi, Mamu"></label>
+        <label>Gender
+          <select name="gender">
+            <option value="">—</option>
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label>Birth year<input name="birthYear" type="number" min="1800" max="2100" placeholder="e.g. 1962"></label>
+        <label>Birth order among siblings<input name="order" type="number" min="1" max="30" placeholder="1 = eldest"></label>
+        <label>Lives in<input name="location" placeholder="City"></label>
+        <label>Phone<input name="phone" type="tel"></label>
+        <label class="check"><input type="checkbox" name="deceased"> Passed away</label>
+      </div>
+      <label>Notes / how to remember them
+        <textarea name="notes" rows="3" placeholder="e.g. Tall, runs a sweet shop in Cuttack, has two dogs"></textarea>
+      </label>
+      <fieldset>
+        <legend>Relationships</legend>
+        <div class="grid2">
+          <label>Parent 1<select name="parent1"></select></label>
+          <label>Parent 2<select name="parent2"></select></label>
+        </div>
+        <label>Spouse(s)</label>
+        <div id="spouseChips" class="chips"></div>
+        <select id="spouseAdd"></select>
+      </fieldset>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="editCancel">Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>
