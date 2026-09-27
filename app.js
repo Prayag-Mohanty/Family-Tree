@@ -25,6 +25,7 @@
   let L = null;                  // current layout
   let selectedId = null;
   let scopeId = null;            // when set, only this person's family is shown
+  let meId = null;               // remembered by the relationship checker
   const cam = { x: 0, y: 0, k: 1 };
 
   // ================================================================ data
@@ -53,7 +54,7 @@
     add('mu4', { name: 'Son', gender: 'male', order: 4, parents: ['mgf', 'mgm'] });
     add('me', { name: 'Me', order: 1, parents: ['dad', 'mom'] });
     add('sib', { name: 'Younger Sibling', order: 2, parents: ['dad', 'mom'] });
-    return { people };
+    return { people, terms: {} };
   }
 
   const PLACEHOLDER_NAMES = new Set([
@@ -86,7 +87,11 @@
     for (const p of Object.values(people)) {
       for (const s of p.spouses) if (!people[s].spouses.includes(p.id)) people[s].spouses.push(p.id);
     }
-    return { people };
+    const terms = {};
+    for (const [k, v] of Object.entries(data.terms || {})) {
+      if (v && typeof v === 'object') terms[String(k).toLowerCase()] = { hi: v.hi == null ? null : String(v.hi), or: v.or == null ? null : String(v.or) };
+    }
+    return { people, terms };
   }
 
   // Undo history (this session only). Call remember() before every data change.
@@ -104,6 +109,7 @@
     if (selectedId && !P(selectedId)) closePanel();
     save(); render();
     if (selectedId) renderPanel();
+    if (relDlg.open) drawRelations();
     toast(`${verb}: ${snap.label}`);
   }
   const undo = () => restore(undoStack, redoStack, 'Undid');
@@ -120,7 +126,7 @@
     catch { toast('Could not save — browser storage may be full (try smaller photos).'); }
   }
   function saveUI() {
-    try { localStorage.setItem(UI_KEY, JSON.stringify({ collapsed: [...collapsed], scopeId, bannerClosed: $('#banner').dataset.closed === '1' })); } catch { /* ignore */ }
+    try { localStorage.setItem(UI_KEY, JSON.stringify({ collapsed: [...collapsed], scopeId, meId, bannerClosed: $('#banner').dataset.closed === '1' })); } catch { /* ignore */ }
   }
 
   async function load() {
@@ -128,6 +134,7 @@
       const ui = JSON.parse(localStorage.getItem(UI_KEY) || '{}');
       collapsed = new Set(ui.collapsed || []);
       scopeId = ui.scopeId || null;
+      meId = ui.meId || null;
       if (ui.bannerClosed) $('#banner').dataset.closed = '1';
     } catch { /* ignore */ }
     try {
@@ -281,6 +288,23 @@
     const sortKids = (u) => { u.kids.sort((a, b) => byAge(a.anchor, b.anchor)); u.kids.forEach(sortKids); };
     units.filter((u) => !u.parent).forEach(sortKids);
 
+    // --- seniority among cousins: within each top family, rank everyone in a
+    // generation (grandchildren and below) by birth year. Needs birth years.
+    for (const r of units.filter((u) => !u.parent)) {
+      const byDepth = new Map();
+      const walk = (u, d) => {
+        if (d >= 2) { if (!byDepth.has(d)) byDepth.set(d, []); byDepth.get(d).push(u); }
+        u.kids.forEach((k) => walk(k, d + 1));
+      };
+      walk(r, 0);
+      for (const row of byDepth.values()) {
+        const dated = row.filter((u) => +people[u.anchor].birthYear);
+        if (dated.length < 2) continue;
+        dated.sort((a, b) => (+people[a.anchor].birthYear - +people[b.anchor].birthYear) || byAge(a.anchor, b.anchor));
+        dated.forEach((u, i) => { u.rank = i + 1; u.rankOf = row.length; });
+      }
+    }
+
     const unitW = (u) => u.members.length * CARD_W + (u.members.length - 1) * SPOUSE_GAP;
     const descCount = (u) => u.kids.reduce((n, k) => n + k.members.length + descCount(k), 0);
 
@@ -391,12 +415,15 @@
     return `M${sx},${sy}V${busY - r}Q${sx},${busY} ${sx + d * r},${busY}H${cx - d * r}Q${cx},${busY} ${cx},${busY + r}V${cy}`;
   }
 
-  function cardHTML(id, x, y, copy) {
+  const ordinal = (n) => n + (['th', 'st', 'nd', 'rd'][(n % 100 >= 11 && n % 100 <= 13) || n % 10 > 3 ? 0 : n % 10]);
+
+  function cardHTML(id, x, y, copy, rank = 0, rankOf = 0) {
     const p = P(id);
     const sub = [p.nickname && `“${p.nickname}”`, years(p)].filter(Boolean).join(' · ') || p.location || '';
     return `<div class="card ${p.gender}${isDead(p) ? ' dead' : ''}${copy ? ' copy' : ''}" data-id="${esc(id)}" style="left:${x}px;top:${y}px" tabindex="0" role="button" aria-label="${esc(p.name)}"${copy ? ' title="Also shown in their other family (see the dotted line)"' : ''}>
         ${avatar(p)}
         <div class="txt"><div class="nm">${esc(p.name)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>
+        ${rank ? `<span class="rank" title="${ordinal(rank)} eldest of the ${rankOf} cousins in this generation of the family">${ordinal(rank)}</span>` : ''}
       </div>`;
   }
 
@@ -440,7 +467,7 @@
       paths.push(`<g class="bridge-tag" transform="translate(${mx},${my})"><rect x="-58" y="-12" width="116" height="24" rx="12"/><text text-anchor="middle" y="5">same person</text></g>`);
     }
 
-    for (const u of visibleUnits) for (const [id, p] of u.mpos) nodes.push(cardHTML(id, p.x, p.y, u.mirror));
+    for (const u of visibleUnits) for (const [id, p] of u.mpos) nodes.push(cardHTML(id, p.x, p.y, u.mirror, id === u.anchor ? u.rank : 0, u.rankOf));
 
     // expand / collapse pills
     for (const u of visibleUnits) {
@@ -730,6 +757,7 @@
         <button class="btn" data-act="add-spouse">+ Spouse</button>
         <button class="btn" data-act="add-sibling">+ Sibling</button>
         <button class="btn" data-act="add-child">+ Child</button>
+        <button class="btn wide" data-act="relate">${meId && meId !== id && P(meId) ? `How is ${esc(p.name.split(' ')[0])} related to me?` : 'Check a relationship'}</button>
         ${childrenOf(id).length ? `<button class="btn wide" data-act="scope">Show only this family</button>` : ''}
         <button class="btn ghost danger wide" data-act="delete">Delete</button>
       </div>`;
@@ -753,6 +781,7 @@
         openEditor(null, { parents: [...p.parents] }); break;
       case 'add-parent': openEditor(null, { spouses: p.parents.slice(0, 1) }, { childOf: id }); break;
       case 'scope': setScope(id); break;
+      case 'relate': openRelations(meId && meId !== id && P(meId) ? meId : null, id); break;
       case 'delete': deletePerson(id); break;
     }
   });
@@ -825,14 +854,15 @@
 
   // ============================================================== editor
 
-  function makePicker(el, { max = Infinity }) {
+  function makePicker(el, { max = Infinity, placeholder = 'Type a name to link…', onChange = null }) {
     let value = [], exclude = new Set();
-    el.innerHTML = `<div class="pk-chips chips"></div><div class="pk-wrap"><input class="pk-input" placeholder="Type a name to link…"><div class="pk-list"></div></div>`;
+    el.innerHTML = `<div class="pk-chips chips"></div><div class="pk-wrap"><input class="pk-input" placeholder="${esc(placeholder)}"><div class="pk-list"></div></div>`;
     const chipsEl = $('.pk-chips', el), wrap = $('.pk-wrap', el), input = $('.pk-input', el), list = $('.pk-list', el);
     let idx = 0;
     const draw = () => {
       chipsEl.innerHTML = value.map((id) => `<span class="chip">${avatar(P(id), 'sm')}${esc(P(id).name)}<button type="button" class="rm" data-rm="${esc(id)}" aria-label="Remove">✕</button></span>`).join('');
       wrap.hidden = value.length >= max;
+      onChange?.([...value]);
     };
     const search = () => {
       const q = input.value;
@@ -951,6 +981,289 @@
     });
   }
 
+  // ======================================================= relationships
+  //
+  // How is B related to A, and what does A call B in Hindi and Odia?
+  // Blood relations come from the nearest common ancestor; in-laws from one
+  // marriage step at either end. Terms are the common forms of address;
+  // families differ, so any term can be changed and the change is kept.
+
+  const G = (id) => (P(id).gender === 'male' ? 'm' : P(id).gender === 'female' ? 'f' : '');
+  // Is x older than y? true / false / null when we can't tell.
+  function older(x, y) {
+    const X = P(x), Y = P(y);
+    const shareParent = X.parents.some((p) => Y.parents.includes(p));
+    if (shareParent && X.order && Y.order && +X.order !== +Y.order) return +X.order < +Y.order;
+    if (X.birthYear && Y.birthYear && +X.birthYear !== +Y.birthYear) return +X.birthYear < +Y.birthYear;
+    return null;
+  }
+  // [hindi, odia] by gender of the person being named
+  const byG = (id, m, f) => { const g = G(id); if (g === 'm') return m; if (g === 'f') return f; return [`${m[0]} / ${f[0]}`, m[1] && f[1] ? `${m[1]} / ${f[1]}` : null]; };
+  // Pick a term by who is older; when birth order/years are missing, show both with the condition.
+  const byAgeOf = (o, ifOlder, ifYounger, subject, ref) => {
+    if (o === true) return ifOlder;
+    if (o === false) return ifYounger;
+    const cond = `if ${P(subject).name.split(' ')[0]} is older than ${P(ref).name.split(' ')[0]}`;
+    return [`${ifOlder[0]} (${cond}), else ${ifYounger[0]}`, ifOlder[1] && ifYounger[1] ? `${ifOlder[1]} (${cond}), else ${ifYounger[1]}` : null];
+  };
+
+  const pw = (id) => ({ m: 'father', f: 'mother' }[G(id)] || 'parent');
+  const cw = (id) => ({ m: 'son', f: 'daughter' }[G(id)] || 'child');
+  const sw = (id) => ({ m: 'husband', f: 'wife' }[G(id)] || 'spouse');
+  function sibw(id, other) {
+    const o = older(id, other);
+    return (o === true ? 'elder ' : o === false ? 'younger ' : '') + ({ m: 'brother', f: 'sister' }[G(id)] || 'sibling');
+  }
+
+  function ancestry(id) {
+    const m = new Map([[id, { d: 0, next: null }]]);
+    const q = [id];
+    while (q.length) {
+      const x = q.shift();
+      for (const p of P(x).parents) if (!m.has(p)) { m.set(p, { d: m.get(x).d + 1, next: x }); q.push(p); }
+    }
+    return m;
+  }
+  // Blood link: chains [a … common ancestor] and [b … common ancestor]
+  function blood(a, b) {
+    const ma = ancestry(a), mb = ancestry(b);
+    let best = null;
+    for (const [x, v] of ma) if (mb.has(x) && (!best || v.d + mb.get(x).d < best.n)) best = { top: x, n: v.d + mb.get(x).d };
+    if (!best) return null;
+    const chain = (m) => { const c = [best.top]; let x = best.top; while (m.get(x).next) { x = m.get(x).next; c.unshift(x); } return c; };
+    const ca = chain(ma), cb = chain(mb);
+    return { ca, cb, k: ca.length - 1, j: cb.length - 1 };
+  }
+
+  function bloodPhrase({ ca, cb, k, j }) {
+    const parts = [];
+    if (j === 0) for (let i = 1; i <= k; i++) parts.push(pw(ca[i]));
+    else if (k === 0) for (let i = j - 1; i >= 0; i--) parts.push(cw(cb[i]));
+    else {
+      for (let i = 1; i < k; i++) parts.push(pw(ca[i]));
+      parts.push(sibw(cb[j - 1], ca[k - 1]));
+      for (let i = j - 2; i >= 0; i--) parts.push(cw(cb[i]));
+    }
+    return parts.join("'s ");
+  }
+
+  // What a calls b, for a blood relative b. Returns [hindi, odia] (null = no common term).
+  function bloodTerms(a, b, { ca, cb, k, j }) {
+    const side = k >= 1 ? G(ca[1]) : '';
+    const pat = side === 'm', mat = side === 'f';
+    if (j === 0) {                                   // ancestors
+      if (k === 1) return byG(b, ['Papa / Pitaji', 'Bapa'], ['Maa / Mummy', 'Maa / Bou']);
+      if (k === 2) return pat ? byG(b, ['Dada ji', 'Jeje / Jejebapa'], ['Dadi ji', 'Jejemaa'])
+        : mat ? byG(b, ['Nana ji', 'Aja'], ['Nani ji', 'Aai']) : byG(b, ['Dada ji / Nana ji', null], ['Dadi ji / Nani ji', null]);
+      if (k === 3) return pat ? byG(b, ['Pardada ji', null], ['Pardadi ji', null]) : byG(b, ['Parnana ji', null], ['Parnani ji', null]);
+      return [null, null];
+    }
+    if (k === 0) {                                   // descendants
+      if (j === 1) return byG(b, ['by name (beta)', 'by name (pua)'], ['by name (beti)', 'by name (jhia)']);
+      if (j === 2) return G(cb[1]) === 'f' ? byG(b, ['by name (naati)', 'by name (nati)'], ['by name (naatin)', 'by name (natuni)'])
+        : byG(b, ['by name (pota)', 'by name (nati)'], ['by name (poti)', 'by name (natuni)']);
+      return ['by name', 'by name'];
+    }
+    if (k === j) {                                   // siblings and cousins
+      const o = older(b, a);
+      return byG(b,
+        byAgeOf(o, ['Bhaiya', 'Bhai / Bhaina'], ['by name (chhota bhai)', 'by name (sana bhai)'], b, a),
+        byAgeOf(o, ['Didi', 'Apa / Nani'], ['by name (chhoti behen)', 'by name (sana bhauni)'], b, a));
+    }
+    if (k === j + 1) {                               // uncles and aunts (incl. parents' cousins)
+      const parent = ca[1];
+      if (pat) return byG(b, byAgeOf(older(b, parent), ['Tau ji / Taya ji', 'Bada Bapa'], ['Chacha ji', 'Dada'], b, parent), ['Bua ji', 'Piusi']);
+      if (mat) return byG(b, ['Mama ji', 'Mamu'], ['Mausi', 'Mausi']);
+      return [null, null];
+    }
+    if (k === j + 2) {                               // grandparents' siblings and cousins
+      return pat ? byG(b, ['Dada ji', 'Jeje'], ['Dadi ji', 'Jejemaa']) : mat ? byG(b, ['Nana ji', 'Aja'], ['Nani ji', 'Aai']) : [null, null];
+    }
+    if (j === k + 1) {                               // nephews and nieces
+      return G(cb[1]) === 'f' ? byG(b, ['by name (bhanja)', 'by name (bhanaja)'], ['by name (bhanji)', 'by name (bhanaji)'])
+        : byG(b, ['by name (bhatija)', 'by name (bhatija)'], ['by name (bhatiji)', 'by name (bhatiji)']);
+    }
+    if (j > k) return ['by name', 'by name'];
+    return [null, null];
+  }
+
+  // b is married to x, who is a's blood relative
+  function spouseOfBloodTerms(a, b, x, bl) {
+    const { ca, k, j } = bl;
+    const side = k >= 1 ? G(ca[1]) : '';
+    if (j === 0 && k === 1) return byG(b, ['Papa / Pitaji', 'Bapa'], ['Maa / Mummy', 'Maa / Bou']);
+    if (j === 0 && k === 2) return side === 'm' ? byG(b, ['Dada ji', 'Jeje'], ['Dadi ji', 'Jejemaa']) : byG(b, ['Nana ji', 'Aja'], ['Nani ji', 'Aai']);
+    if (k === j + 1) {
+      const parent = ca[1];
+      if (side === 'm' && G(x) === 'm') return byAgeOf(older(x, parent), ['Tai ji', 'Bada Maa'], ['Chachi ji', 'Khudi'], x, parent);
+      if (side === 'm' && G(x) === 'f') return ['Fufa ji', 'Piusa'];
+      if (side === 'f' && G(x) === 'm') return ['Mami ji', 'Maain'];
+      if (side === 'f' && G(x) === 'f') return ['Mausa ji', 'Mausa'];
+    }
+    if (k === j + 2) return side === 'm' ? byG(b, ['Dada ji', 'Jeje'], ['Dadi ji', 'Jejemaa']) : byG(b, ['Nana ji', 'Aja'], ['Nani ji', 'Aai']);
+    if (k === j && k >= 1) {
+      const o = older(x, a);
+      if (G(x) === 'm') return o === false ? ['by name (bhai ki patni)', 'by name (bhai bohu)'] : ['Bhabhi', 'Bhauja'];
+      if (G(x) === 'f') return ['Jija ji', 'Bhinoi'];
+    }
+    if (k === 0 && j === 1) return G(x) === 'm' ? ['by name (bahu)', 'by name (bohu)'] : ['Damad ji / Jamai ji', 'Juain'];
+    if (j > k) return ['by name', 'by name'];
+    return [null, null];
+  }
+
+  // b is a blood relative of a's spouse s
+  function spousesRelativeTerms(a, b, s, bl) {
+    const { k, j } = bl;
+    if (k === 1 && j === 0) return byG(b, ['Papa ji (sasur ji)', 'Bapa (shwashura)'], ['Mummy ji (saas ji)', 'Maa (shashu)']);
+    if (k === 1 && j === 1) {
+      const o = older(b, s);
+      if (G(a) === 'f' || G(s) === 'm') {            // husband's siblings
+        return byG(b, byAgeOf(o, ['Bhaiya (jeth ji)', 'Bhai (bhashura)'], ['by name (devar)', 'by name (diara)'], b, s),
+          byAgeOf(o, ['Didi (nanad)', 'Apa (nanada)'], ['by name (nanad)', 'by name (nanada)'], b, s));
+      }
+      return byG(b, byAgeOf(o, ['Bhaiya (saala)', 'Bhai (shala)'], ['by name (saala)', 'by name (shala)'], b, s),
+        byAgeOf(o, ['Didi (saali)', 'Apa (shali)'], ['by name (saali)', 'by name (shali)'], b, s));
+    }
+    return null;   // otherwise: whatever the spouse calls them
+  }
+
+  // Full answer: { phrase, hi, or, via } — phrase completes "b is a's ___".
+  function relate(a, b, depth = 0) {
+    if (a === b) return { phrase: 'the same person', hi: null, or: null };
+    const A = P(a), B = P(b);
+    if (A.spouses.includes(b)) return { phrase: sw(b), hi: 'by name', or: 'by name' };
+    const bl = blood(a, b);
+    if (bl) return { phrase: bloodPhrase(bl), ...pair(bloodTerms(a, b, bl)), n: bl.k + bl.j };
+
+    let best = null;
+    for (const x of B.spouses) {                      // spouse of a blood relative
+      const r = blood(a, x);
+      if (r && (!best || r.k + r.j < best.n)) best = { n: r.k + r.j + 1, kind: 'sp', x, r };
+    }
+    for (const s of A.spouses) {                      // blood relative of a's spouse
+      const r = blood(s, b);
+      if (r && (!best || r.k + r.j + 1 < best.n)) best = { n: r.k + r.j + 1, kind: 'in', x: s, r };
+    }
+    if (best?.kind === 'sp') return { phrase: `${bloodPhrase(best.r)}'s ${sw(b)}`, ...pair(spouseOfBloodTerms(a, b, best.x, best.r)), n: best.n };
+    if (best?.kind === 'in') {
+      const s = best.x;
+      const t = spousesRelativeTerms(a, b, s, best.r);
+      const phrase = `${sw(s)}'s ${bloodPhrase(best.r)}`;
+      if (t) return { phrase, ...pair(t), n: best.n };
+      const via = relate(s, b, depth + 1);
+      return { phrase, hi: via.hi, or: via.or, via: P(s).name, n: best.n };
+    }
+    if (depth < 1) {                                  // spouse's relative's spouse, etc.
+      for (const s of A.spouses) {
+        const r = relate(s, b, depth + 1);
+        if (r.phrase && !r.none) return { phrase: `${sw(s)}'s ${r.phrase}`, hi: r.hi, or: r.or, via: P(s).name, n: (r.n || 9) + 1 };
+      }
+    }
+    return { phrase: null, none: true };
+  }
+  const pair = ([hi, or]) => ({ hi, or });
+
+  // Family-specific corrections, keyed by the English relationship.
+  function termsFor(a, b) {
+    const r = relate(a, b);
+    const o = r.phrase && state.terms?.[r.phrase.toLowerCase()];
+    return { ...r, hi: o?.hi ?? r.hi, or: o?.or ?? r.or, custom: !!o };
+  }
+
+
+  // ------------------------------------------------ relationship checker UI
+
+  const relDlg = $('#relDialog');
+  let relPair = [null, null];
+  const relA = makePicker($('#relA'), { max: 1, placeholder: 'Type a name…', onChange: (v) => { relPair[0] = v[0] || null; drawRelations(); } });
+  const relB = makePicker($('#relB'), { max: 1, placeholder: 'Type a name…', onChange: (v) => { relPair[1] = v[0] || null; drawRelations(); } });
+
+  function openRelations(a = meId, b = null) {
+    if (a && !P(a)) a = null;
+    relPair = [a, b];
+    relA.set(a ? [a] : [], []);
+    relB.set(b ? [b] : [], []);
+    drawRelations();
+    if (!relDlg.open) relDlg.showModal();
+    const empty = $$('.pk-wrap:not([hidden]) .pk-input', relDlg)[0];
+    empty?.focus();
+  }
+
+  const termCell = (t) => (t ? esc(t) : '<span class="muted">no common term</span>');
+  function termBox(a, b) {
+    const r = termsFor(a, b);
+    if (r.none) return '';
+    return `<div class="rel-card">
+      <div class="rc-h"><b>${esc(P(a).name)}</b> calls <b>${esc(P(b).name)}</b></div>
+      <div class="rc-terms">
+        <div><span class="lang">Hindi</span><span class="term">${termCell(r.hi)}</span></div>
+        <div><span class="lang">Odia</span><span class="term">${termCell(r.or)}</span></div>
+      </div>
+      ${r.via ? `<div class="rc-via">The same as ${esc(r.via)} calls them.</div>` : ''}
+      <button type="button" class="link" data-edit-term="${esc(r.phrase)}" data-hi="${esc(r.hi || '')}" data-or="${esc(r.or || '')}">Edit${r.custom ? ' (edited)' : ''}</button>
+    </div>`;
+  }
+
+  function drawRelations() {
+    const [a, b] = relPair;
+    $('#relMe').checked = !!a && a === meId;
+    let html = '';
+    if (a && b) {
+      const r = relate(a, b);
+      if (r.none) html = `<div class="rel-sentence">No link was found between <b>${esc(P(a).name)}</b> and <b>${esc(P(b).name)}</b>. Add the missing parents or spouses to connect them.</div>`;
+      else if (a === b) html = `<div class="rel-sentence">That’s the same person.</div>`;
+      else html = `<div class="rel-sentence"><b>${esc(P(b).name)}</b> is <b>${esc(P(a).name)}</b>’s <em>${esc(r.phrase)}</em>.</div>
+        <div class="rel-cards">${termBox(a, b)}${termBox(b, a)}</div>`;
+    }
+    $('#relResult').innerHTML = html;
+
+    // Everyone, as related to the first person
+    if (a) {
+      const rows = all().filter((p) => p.id !== a).map((p) => ({ p, r: termsFor(a, p.id) })).filter((x) => !x.r.none)
+        .sort((x, y) => (x.r.n ?? 99) - (y.r.n ?? 99) || x.p.name.localeCompare(y.p.name));
+      $('#relAll').innerHTML = `<div class="rel-all-head"><h3>Everyone, as related to ${esc(P(a).name)}</h3>
+          <input class="pk-input" id="relFilter" placeholder="Filter…"></div>
+        <div class="rel-table" role="table">
+          <div class="rt-row rt-head" role="row"><span>Name</span><span>Relation</span><span>Hindi</span><span>Odia</span></div>
+          ${rows.map(({ p, r }) => `<div class="rt-row" role="row" data-rel-b="${esc(p.id)}" data-q="${esc((p.name + ' ' + (p.nickname || '') + ' ' + r.phrase + ' ' + (r.hi || '') + ' ' + (r.or || '')).toLowerCase())}">
+            <span class="rt-name">${avatar(p, 'sm')}${esc(p.name)}</span><span class="rt-rel">${esc(r.phrase)}</span><span>${termCell(r.hi)}</span><span>${termCell(r.or)}</span></div>`).join('')}
+        </div>`;
+      $('#relFilter').addEventListener('input', (e) => {
+        const q = e.target.value.trim().toLowerCase();
+        $$('.rt-row[data-q]', relDlg).forEach((row) => { row.hidden = !!q && !row.dataset.q.includes(q); });
+      });
+    } else $('#relAll').innerHTML = '';
+  }
+
+  $('#relBtn').onclick = () => openRelations(meId, null);
+  $('#relClose').onclick = () => relDlg.close();
+  $('#relSwap').onclick = () => openRelations(relPair[1], relPair[0]);
+  $('#relMe').addEventListener('change', (e) => {
+    if (e.target.checked && relPair[0]) meId = relPair[0];
+    else if (!e.target.checked && meId === relPair[0]) meId = null;
+    saveUI();
+    if (selectedId) renderPanel();
+  });
+  relDlg.addEventListener('click', (e) => {
+    if (e.target === relDlg) { relDlg.close(); return; }          // click on the backdrop
+    const row = e.target.closest('[data-rel-b]');
+    if (row) { openRelations(relPair[0], row.dataset.relB); $('.rel', relDlg).scrollTop = 0; relDlg.scrollTop = 0; return; }
+    const ed = e.target.closest('[data-edit-term]');
+    if (ed) {
+      const key = ed.dataset.editTerm.toLowerCase();
+      const hi = prompt(`Hindi term for “${ed.dataset.editTerm}”:`, ed.dataset.hi);
+      if (hi === null) return;
+      const or = prompt(`Odia term for “${ed.dataset.editTerm}”:`, ed.dataset.or);
+      if (or === null) return;
+      remember(`edit term “${ed.dataset.editTerm}”`);
+      state.terms = state.terms || {};
+      if (!hi.trim() && !or.trim()) delete state.terms[key];
+      else state.terms[key] = { hi: hi.trim() || null, or: or.trim() || null };
+      save(); updateUndoButtons(); drawRelations();
+      toast('Term saved for every “' + ed.dataset.editTerm + '”');
+    }
+  });
+
   // ================================================================ menu
 
   $('#addPersonBtn').onclick = () => openEditor(null);
@@ -1002,7 +1315,7 @@
   $('#undoBtn').onclick = undo;
   $('#redoBtn').onclick = redo;
   document.addEventListener('keydown', (e) => {
-    if (dlg.open) return;
+    if (dlg.open || relDlg.open) return;
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
     const mod = e.ctrlKey || e.metaKey;
     if (mod && !typing && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
