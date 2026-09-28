@@ -7,7 +7,7 @@
   const UI_KEY = 'familyTree.ui';
 
   // Layout metrics (world units = px at 100% zoom)
-  let CARD_W = 164, CARD_H = 66;  // larger with "Larger profile cards"
+  let CARD_W = 196, CARD_H = 84;  // larger with "Larger profile cards"
   const SPOUSE_GAP = 28;          // gap between spouses in a couple
   const SIB_GAP = 30;             // gap between sibling sub-trees
   const TREE_GAP = 110;           // gap between unconnected top-level families
@@ -2154,8 +2154,8 @@
   // ------------------------------------------------------- card size
 
   function setCardSize(large, rerender = true) {
-    CARD_W = large ? 220 : 164;
-    CARD_H = large ? 118 : 66;
+    CARD_W = large ? 240 : 196;
+    CARD_H = large ? 132 : 84;
     ROW_H = CARD_H + 108;
     document.body.classList.toggle('large-cards', large);
     $('[data-menu="cards"]').textContent = large ? 'Smaller profile cards' : 'Larger profile cards';
