@@ -42,6 +42,45 @@
   // …and read Odia script typed into a term back as Latin, so the naming rules still understand it.
   const termInv = Object.entries(ODIA.terms).map(([lat, od]) => [lat, od.normalize('NFC')]).sort((a, b) => b[1].length - a[1].length);
   const toLatin = (s) => termInv.reduce((acc, [lat, od]) => acc.split(od).join(lat), String(s || '').normalize('NFC'));
+  // Names are typed in English letters; Odia readers see them in Odia script. Names the
+  // family uses are spelt from a list in i18n.js, anything else letter by letter.
+  const OD_CONS = [['ksh', 'କ୍ଷ'], ['nch', 'ଞ୍ଚ'], ['chh', 'ଛ'], ['nj', 'ଞ୍ଜ'], ['nk', 'ଙ୍କ'], ['ngh', 'ଙ୍ଘ'], ['ng', 'ଙ୍ଗ'], ['sh', 'ଶ'], ['ch', 'ଚ'], ['kh', 'ଖ'], ['gh', 'ଘ'], ['jh', 'ଝ'],
+    ['th', 'ଥ'], ['dh', 'ଧ'], ['ph', 'ଫ'], ['bh', 'ଭ'], ['k', 'କ'], ['g', 'ଗ'], ['c', 'କ'], ['j', 'ଜ'], ['t', 'ତ'], ['d', 'ଦ'],
+    ['n', 'ନ'], ['p', 'ପ'], ['b', 'ବ'], ['m', 'ମ'], ['y', 'ୟ'], ['r', 'ର'], ['l', 'ଲ'], ['v', 'ଭ'], ['w', 'ୱ'], ['s', 'ସ'],
+    ['h', 'ହ'], ['f', 'ଫ'], ['z', 'ଜ'], ['q', 'କ'], ['x', 'କ୍ଷ']];
+  const OD_VOW = [['aa', 'ଆ', 'ା'], ['ai', 'ଐ', 'ୈ'], ['au', 'ଔ', 'ୌ'], ['ee', 'ଈ', 'ୀ'], ['oo', 'ଊ', 'ୂ'], ['ou', 'ଔ', 'ୌ'],
+    ['a', 'ଅ', ''], ['i', 'ଇ', 'ି'], ['u', 'ଉ', 'ୁ'], ['e', 'ଏ', 'େ'], ['o', 'ଓ', 'ୋ']];
+  function translit(word) {
+    const w = word.toLowerCase();
+    let out = '', i = 0, afterCons = false;
+    while (i < w.length) {
+      const end = (n) => i + n === w.length;
+      const v = OD_VOW.find(([l]) => w.startsWith(l, i));
+      if (v || (w[i] === 'y' && afterCons && end(1))) {            // "Dolly": a final y is a vowel
+        const [l, full, sign] = v || ['y', 'ଇ', 'ି'];
+        out += afterCons ? (l === 'a' && end(1) && !/ndr$/.test(w.slice(0, i)) ? 'ା' : sign) : full;   // "Pramila": a final a is long (not "Rabindra")
+        i += l.length; afterCons = false;
+        continue;
+      }
+      if (afterCons && w.startsWith('ru', i) && /[a-z]/.test(w[i + 2] || '') && !/[aeiou]/.test(w[i + 2])) {   // "Smruti", "Krushna"
+        out += 'ୃ'; i += 2; afterCons = false;
+        continue;
+      }
+      const c = (i === 0 && w.startsWith('gy') && ['gy', 'ଜ୍ଞ'])                     // "Gyana"
+        || (afterCons && 'vw'.includes(w[i]) && [w[i], 'ୱ'])                            // "Pruthvi"
+        || OD_CONS.find(([l]) => w.startsWith(l, i));
+      if (!c) { out += word[i++]; afterCons = false; continue; }
+      out += (afterCons ? '୍' : '') + c[1];
+      i += c[0].length; afterCons = true;
+    }
+    return out;
+  }
+  const odiaNames = new Map();
+  function odiaName(s) {
+    if (!odiaNames.has(s)) odiaNames.set(s, s.replace(/[A-Za-z]+/g, (w) => (ODIA.names || {})[w.toLowerCase()] || translit(w)));
+    return odiaNames.get(s);
+  }
+
   // "father's elder brother" → "ବାପାଙ୍କ ବଡ଼ ଭାଇ"
   function relOut(phrase) {
     if (!OR() || !phrase) return phrase;
@@ -64,7 +103,7 @@
 
   function blankPerson(extra = {}) {
     return {
-      id: uid(), name: '', nameOr: '', nickname: '', gender: '', birthYear: '', deathYear: '', order: '',
+      id: uid(), name: '', nickname: '', gender: '', birthYear: '', deathYear: '', order: '',
       deceased: false, location: '', phone: '', notes: '', photo: '', parents: [], spouses: [], ...extra,
     };
   }
@@ -107,7 +146,6 @@
       if (!p.nickname && raw.callName) p.nickname = raw.callName;   // v1 field
       delete p.callName;
       p.name = String(p.name || '').trim() || '(unnamed)';
-      p.nameOr = String(p.nameOr || '').trim();
       p.parents = [...(raw.parents || [])];
       p.spouses = [...(raw.spouses || [])];
       people[id] = p;
@@ -196,8 +234,9 @@
   function nm(x) {
     const p = typeof x === 'string' ? P(x) : x;
     if (p.unknown && p.name === 'Parents unknown') return t(p.name);
-    return (OR() && p.nameOr) || p.name;
+    return OR() ? odiaName(p.name) : p.name;
   }
+  const nick = (p) => (OR() && p.nickname ? odiaName(p.nickname) : p.nickname);
   const first = (x) => nm(x).split(' ')[0];
 
   // Eldest first: birth order when both have one, else birth year, else whoever has either.
@@ -624,7 +663,7 @@
         <div class="txt"><div class="nm">${esc(t('Parents unknown'))}</div><div class="sub">${esc(t('Add a name if you find out'))}</div></div>
       </div>`;
     }
-    const sub = [p.nickname && `“${p.nickname}”`, years(p)].filter(Boolean).join(' · ') || p.location || '';
+    const sub = [p.nickname && `“${nick(p)}”`, years(p)].filter(Boolean).join(' · ') || p.location || '';
     return `<div class="card ${p.gender}${isDead(p) ? ' dead' : ''}${copy ? ' copy' : ''}" data-id="${esc(id)}" style="left:${x}px;top:${y}px" tabindex="0" role="button" aria-label="${esc(nm(p))}"${copy ? ` title="${esc(t('Also shown in their other family (see the dotted line)'))}"` : ''}>
         ${avatar(p)}
         <div class="txt"><div class="nm">${esc(nm(p))}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>
@@ -964,8 +1003,8 @@
       <div class="p-head">
         ${avatar(p, 'xl')}
         <h2 class="p-name">${esc(nm(p))}</h2>
-        ${OR() && p.nameOr && p.nameOr !== p.name ? `<div class="p-alt">${esc(p.name)}</div>` : ''}
-        ${p.nickname ? `<div class="p-nick">“${esc(p.nickname)}”</div>` : ''}
+        ${OR() ? `<div class="p-alt">${esc(p.name)}</div>` : ''}
+        ${p.nickname ? `<div class="p-nick">“${esc(nick(p))}”</div>` : ''}
         ${years(p) ? `<div class="p-years">${esc(years(p))}</div>` : ''}
       </div>
       ${facts.length ? `<dl class="p-facts">${facts.map(([k, v]) => `<dt>${esc(t(k))}</dt><dd>${v}</dd>`).join('')}</dl>` : ''}
@@ -1033,10 +1072,10 @@
     if (!q) return [];
     const scored = [];
     for (const p of realPeople()) {
-      const name = `${p.name} ${p.nameOr || ''}`.toLowerCase(), nick = (p.nickname || '').toLowerCase();
+      const name = `${p.name} ${odiaName(p.name)}`.toLowerCase(), nickname = `${p.nickname || ''} ${odiaName(p.nickname || '')}`.toLowerCase();
       let s = 0;
-      if (name.startsWith(q) || nick.startsWith(q)) s = 4;
-      else if (name.split(/\s+/).some((w) => w.startsWith(q)) || nick.includes(q)) s = 3;
+      if (name.startsWith(q) || nickname.startsWith(q)) s = 4;
+      else if (name.split(/\s+/).some((w) => w.startsWith(q)) || nickname.includes(q)) s = 3;
       else if (name.includes(q)) s = 2;
       else if ([p.location, p.notes, p.phone].some((f) => String(f || '').toLowerCase().includes(q))) s = 1;
       if (s) scored.push([s, p]);
@@ -1048,7 +1087,7 @@
     if (!q.trim() || i < 0) return esc(text);
     return esc(text.slice(0, i)) + '<mark>' + esc(text.slice(i, i + q.trim().length)) + '</mark>' + esc(text.slice(i + q.trim().length));
   }
-  const resultRow = (p, q, attr) => `<div class="res" ${attr}="${esc(p.id)}">${avatar(p)}<div><div class="r-name">${highlight(nm(p), q)}${p.nickname ? ` <span class="r-ctx">“${highlight(p.nickname, q)}”</span>` : ''}</div><div class="r-ctx">${esc(context(p))}</div></div></div>`;
+  const resultRow = (p, q, attr) => `<div class="res" ${attr}="${esc(p.id)}">${avatar(p)}<div><div class="r-name">${highlight(nm(p), q)}${p.nickname ? ` <span class="r-ctx">“${highlight(nick(p), q)}”</span>` : ''}</div><div class="r-ctx">${esc(context(p))}</div></div></div>`;
 
   const sInput = $('#search'), sBox = $('#searchResults');
   let sIndex = 0;
@@ -1136,7 +1175,7 @@
     const base = id ? P(id) : blankPerson(preset);
     editing = { id: base.id, isNew: !id, childOf: extra.childOf || null, photo: base.photo, oldSibs: id ? siblingsOf(id) : [] };
     $('#editTitle').textContent = base.unknown ? t('Add the parent’s name') : id ? t('Edit {name}', { name: nm(base) }) : t('Add person');
-    const fields = { fullName: base.name, nameOr: base.nameOr, nickname: base.nickname, gender: base.gender, birthYear: base.birthYear, deathYear: base.deathYear, order: base.order, location: base.location, phone: base.phone, notes: base.notes };
+    const fields = { fullName: base.name, nickname: base.nickname, gender: base.gender, birthYear: base.birthYear, deathYear: base.deathYear, order: base.order, location: base.location, phone: base.phone, notes: base.notes };
     for (const [k, v] of Object.entries(fields)) F(k).value = v ?? '';
     F('deceased').checked = !!base.deceased;
     // Placeholder names: clear the field but show the old name as a hint.
@@ -1173,7 +1212,7 @@
     const id = editing.id;
     const old = P(id);
     const d = {
-      ...(old || blankPerson()), id, name, nameOr: F('nameOr').value.trim(),
+      ...(old || blankPerson()), id, name,
       nickname: F('nickname').value.trim(), gender: F('gender').value,
       birthYear: F('birthYear').value, deathYear: F('deathYear').value, order: F('order').value,
       location: F('location').value.trim(), phone: F('phone').value.trim(), notes: F('notes').value.trim(),
@@ -1262,12 +1301,20 @@
     return (o === true ? 'elder ' : o === false ? 'younger ' : '') + ({ m: 'brother', f: 'sister' }[G(id)] || 'sibling');
   }
 
+  // Parents for naming. With only one parent recorded, that parent's (only) spouse counts
+  // as the other one: a great-grandmother entered just as her husband's wife is still Parnani.
+  function namingParents(x) {
+    const ps = P(x).parents;
+    if (ps.length !== 1) return ps;
+    const sp = P(ps[0]).spouses.filter((s) => !P(s).unknown);
+    return sp.length === 1 ? [ps[0], sp[0]] : ps;
+  }
   function ancestry(id) {
     const m = new Map([[id, { d: 0, next: null }]]);
     const q = [id];
     while (q.length) {
       const x = q.shift();
-      for (const p of P(x).parents) if (!m.has(p)) { m.set(p, { d: m.get(x).d + 1, next: x }); q.push(p); }
+      for (const p of namingParents(x)) if (!m.has(p)) { m.set(p, { d: m.get(x).d + 1, next: x }); q.push(p); }
     }
     return m;
   }
@@ -1302,7 +1349,7 @@
       if (k === 1) return byG(b, ['Papa / Pitaji', 'Bapa'], ['Maa / Mummy', 'Maa / Bou']);
       if (k === 2) return pat ? byG(b, ['Dada ji', 'Jeje / Jejebapa'], ['Dadi ji', 'Jejemaa'])
         : mat ? byG(b, ['Nana ji', 'Aja'], ['Nani ji', 'Aai']) : byG(b, ['Dada ji / Nana ji', null], ['Dadi ji / Nani ji', null]);
-      if (k === 3) return pat ? byG(b, ['Pardada ji', null], ['Pardadi ji', null]) : byG(b, ['Parnana ji', null], ['Parnani ji', null]);
+      if (k === 3) return pat ? byG(b, ['Pardada ji', 'Bada Jeje'], ['Pardadi ji', 'Bada Jejemaa']) : byG(b, ['Parnana ji', 'Bada Aja'], ['Parnani ji', 'Bada Aai']);
       return [null, null];
     }
     if (k === 0) {                                   // descendants
@@ -1440,7 +1487,11 @@
     const both = (m, f) => (r.g === 'm' ? m : r.g === 'f' ? f : [`${m[0]} / ${f[0]}`, m[1] && f[1] ? `${m[1]} / ${f[1]}` : null]);
     const byAge = (e, y) => (r.age === 'e' ? e : r.age === 'y' ? y : [0, 1].map((i) => t('{e} (if elder) or {y}', { e: e[i], y: y[i] })));
     const side = r.side === 's' ? 'p' : r.side;
-    if (r.gen >= 3) return both(['Pardada ji / Parnana ji', null], ['Pardadi ji / Parnani ji', null]);
+    if (r.gen >= 3) {
+      if (side === 'p') return both(['Pardada ji', 'Bada Jeje'], ['Pardadi ji', 'Bada Jejemaa']);
+      if (side === 'm') return both(['Parnana ji', 'Bada Aja'], ['Parnani ji', 'Bada Aai']);
+      return both(['Pardada ji / Parnana ji', 'Bada Jeje / Bada Aja'], ['Pardadi ji / Parnani ji', 'Bada Jejemaa / Bada Aai']);
+    }
     if (r.gen === 2) {
       if (side === 'p') return both(['Dada ji', 'Jeje'], ['Dadi ji', 'Jejemaa']);
       if (side === 'm') return both(['Nana ji', 'Aja'], ['Nani ji', 'Aai']);
@@ -1468,6 +1519,7 @@
   const TERM_ROLES = [
     // [pattern, lang, role]
     [/\bpar(dada|dadi|nana|nani)\b/, 'hi', (m) => ({ gen: 3, side: m[1].startsWith('d') ? 'p' : 'm', g: m[1].endsWith('i') ? 'f' : 'm' })],
+    [/\bbada (jejema+|jeje|aai|aja)\b/, 'or', (m) => ({ gen: 3, side: m[1].startsWith('j') ? 'p' : 'm', g: /ma+$|aai/.test(m[1]) ? 'f' : 'm' })],
     [/\bdadi\b/, 'hi', { gen: 2, side: 'p', g: 'f' }], [/\bdada\b/, 'hi', { gen: 2, side: 'p', g: 'm' }],
     [/\bnani\b/, 'hi', { gen: 2, side: 'm', g: 'f' }], [/\bnana\b/, 'hi', { gen: 2, side: 'm', g: 'm' }],
     [/\bjejema+\b/, 'or', { gen: 2, side: 'p', g: 'f' }], [/\bjeje(bapa)?\b/, 'or', { gen: 2, side: 'p', g: 'm' }],
@@ -1689,7 +1741,7 @@
           <input class="pk-input" id="relFilter" placeholder="${esc(t('Filter…'))}"></div>
         <div class="rel-table" role="table">
           <div class="rt-row rt-head" role="row"><span>${t('Name')}</span><span>${t('Relation')}</span>${cols(`<span>${t('Hindi')}</span>`, `<span>${t('Odia')}</span>`)}</div>
-          ${rows.map(({ p, r }) => `<div class="rt-row" role="row" data-rel-b="${esc(p.id)}" data-q="${esc([p.name, p.nameOr, p.nickname, r.phrase, relOut(r.phrase), r.hi, r.or, orOut(r.or)].filter(Boolean).join(' ').toLowerCase())}">
+          ${rows.map(({ p, r }) => `<div class="rt-row" role="row" data-rel-b="${esc(p.id)}" data-q="${esc([p.name, odiaName(p.name), p.nickname, r.phrase, relOut(r.phrase), r.hi, r.or, orOut(r.or)].filter(Boolean).join(' ').toLowerCase())}">
             <span class="rt-name">${avatar(p, 'sm')}${esc(nm(p))}</span><span class="rt-rel">${esc(relOut(r.phrase))}</span>${cols(`<span>${termCell(r.hi, 'hi')}</span>`, `<span>${termCell(r.or, 'or')}</span>`)}</div>`).join('')}
         </div>`;
       $('#relFilter').addEventListener('input', (e) => {
@@ -2152,7 +2204,7 @@
           const arcLen = (Math.PI * rm * (a2 - a1)) / 180;
           if (g <= 2) {
             const lines = [words[0], words.slice(1).join(' ')].filter(Boolean);
-            const sub = years(p) || p.nickname || '';
+            const sub = years(p) || nick(p) || '';
             parts.push(`<text class="fan-t g${g}" x="${tx}" y="${ty - (lines.length - 1) * 8 - (sub ? 6 : 0)}" text-anchor="middle">${lines.map((l, k) => `<tspan x="${tx}" dy="${k ? 16 : 0}">${esc(l)}</tspan>`).join('')}${sub ? `<tspan class="fan-sub" x="${tx}" dy="16">${esc(sub)}</tspan>` : ''}</text>`);
           } else {
             let rot = mid; let flip = mid > 0;
