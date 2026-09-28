@@ -20,6 +20,35 @@
   const uid = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
+  // ============================================================ language
+  // English is written inline and doubles as the key into i18n.js (Odia).
+
+  const LANG_KEY = 'familyTree.lang';
+  const ODIA = window.FT_ODIA || { ui: {}, rel: {}, terms: {} };
+  let lang = 'en';
+  try { lang = localStorage.getItem(LANG_KEY) || (/^or\b/i.test(navigator.language) ? 'or' : 'en'); } catch { /* ignore */ }
+  const OR = () => lang === 'or';
+  function t(s, vars = {}) {
+    return ((OR() && ODIA.ui[s]) || s).replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m));
+  }
+  // Odia forms of address are stored in Latin letters; show them in Odia script.
+  const termWords = Object.keys(ODIA.terms).sort((a, b) => b.length - a.length);
+  const termRe = new RegExp(`\\b(${termWords.map((w) => w.replace(/ /g, '\\s+')).join('|')})\\b`, 'gi');
+  function orOut(s) {
+    if (!OR() || !s) return s;
+    return s.replace(termRe, (w) => ODIA.terms[w.toLowerCase().replace(/\s+/g, ' ')] || w);
+  }
+  const hiOut = (s) => (OR() && s ? s.replace(/\bby name\b/gi, ODIA.terms['by name']) : s);
+  // …and read Odia script typed into a term back as Latin, so the naming rules still understand it.
+  const termInv = Object.entries(ODIA.terms).map(([lat, od]) => [lat, od.normalize('NFC')]).sort((a, b) => b[1].length - a[1].length);
+  const toLatin = (s) => termInv.reduce((acc, [lat, od]) => acc.split(od).join(lat), String(s || '').normalize('NFC'));
+  // "father's elder brother" → "ବାପାଙ୍କ ବଡ଼ ଭାଇ"
+  function relOut(phrase) {
+    if (!OR() || !phrase) return phrase;
+    const parts = phrase.split("'s ");
+    return parts.map((w, i) => (ODIA.rel[w] || w) + (i < parts.length - 1 ? 'ଙ୍କ' : '')).join(' ');
+  }
+
   let state = { people: {} };
   let collapsed = new Set();     // anchor ids of couples whose children are hidden
   let L = null;                  // current layout
@@ -35,7 +64,7 @@
 
   function blankPerson(extra = {}) {
     return {
-      id: uid(), name: '', nickname: '', gender: '', birthYear: '', deathYear: '', order: '',
+      id: uid(), name: '', nameOr: '', nickname: '', gender: '', birthYear: '', deathYear: '', order: '',
       deceased: false, location: '', phone: '', notes: '', photo: '', parents: [], spouses: [], ...extra,
     };
   }
@@ -78,6 +107,7 @@
       if (!p.nickname && raw.callName) p.nickname = raw.callName;   // v1 field
       delete p.callName;
       p.name = String(p.name || '').trim() || '(unnamed)';
+      p.nameOr = String(p.nameOr || '').trim();
       p.parents = [...(raw.parents || [])];
       p.spouses = [...(raw.spouses || [])];
       people[id] = p;
@@ -106,27 +136,27 @@
   }
   function restore(from, to, verb) {
     const snap = from.pop();
-    if (!snap) { toast(verb === 'Undid' ? 'Nothing to undo' : 'Nothing to redo'); return; }
+    if (!snap) { toast(t(verb === 'Undid' ? 'Nothing to undo' : 'Nothing to redo')); return; }
     to.push({ label: snap.label, data: JSON.stringify(state) });
     state = normalize(JSON.parse(snap.data));
     if (selectedId && !P(selectedId)) closePanel();
     save(); render();
     if (selectedId) renderPanel();
     if (relDlg.open) drawRelations();
-    toast(`${verb}: ${snap.label}`);
+    toast(t(`${verb}: {what}`, { what: snap.label }));
   }
   const undo = () => canEdit() && restore(undoStack, redoStack, 'Undid');
   const redo = () => canEdit() && restore(redoStack, undoStack, 'Redid');
   function updateUndoButtons() {
     $('#undoBtn').disabled = !undoStack.length;
     $('#redoBtn').disabled = !redoStack.length;
-    $('#undoBtn').title = undoStack.length ? `Undo ${undoStack[undoStack.length - 1].label} (Ctrl+Z)` : 'Undo (Ctrl+Z)';
-    $('#redoBtn').title = redoStack.length ? `Redo ${redoStack[redoStack.length - 1].label} (Ctrl+Shift+Z)` : 'Redo (Ctrl+Shift+Z)';
+    $('#undoBtn').title = undoStack.length ? t('Undo {what} (Ctrl+Z)', { what: undoStack[undoStack.length - 1].label }) : t('Undo (Ctrl+Z)');
+    $('#redoBtn').title = redoStack.length ? t('Redo {what} (Ctrl+Shift+Z)', { what: redoStack[redoStack.length - 1].label }) : t('Redo (Ctrl+Shift+Z)');
   }
 
   function saveLocal() {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
-    catch { toast('Could not save — browser storage may be full (try smaller photos).'); }
+    catch { toast(t('Could not save — browser storage may be full (try smaller photos).')); }
   }
   // Every change goes through here: kept in this browser, and sent to the shared tree when there is one.
   function save() {
@@ -162,6 +192,13 @@
 
   const P = (id) => state.people[id];
   const all = () => Object.values(state.people);
+  // Display name: the Odia spelling when reading in Odia and one has been added.
+  function nm(x) {
+    const p = typeof x === 'string' ? P(x) : x;
+    if (p.unknown && p.name === 'Parents unknown') return t(p.name);
+    return (OR() && p.nameOr) || p.name;
+  }
+  const first = (x) => nm(x).split(' ')[0];
 
   // Eldest first: birth order when both have one, else birth year, else whoever has either.
   function byAge(a, b) {
@@ -200,7 +237,7 @@
     const merge = (from, to) => { for (const c of all()) if (c.parents.length && c.parents.every((x) => from.includes(x))) c.parents = [...to]; };
     if (onlyUnknown(B.parents)) { merge([...B.parents], A.parents); return ''; }
     if (onlyUnknown(A.parents)) { merge([...A.parents], B.parents); return ''; }
-    return `${A.name} and ${B.name} already have different parents, so they can't be linked as siblings.`;
+    return t('{a} and {b} already have different parents, so they can’t be linked as siblings.', { a: nm(A), b: nm(B) });
   }
   // Stand-in parents linking fewer than two children aren't needed any more.
   function cleanupUnknown() {
@@ -218,8 +255,8 @@
     const b = p.birthYear, d = p.deathYear;
     if (b && d) return `${b} – ${d}`;
     if (b && p.deceased) return `${b} – †`;
-    if (b) return `b. ${b}`;
-    if (d) return `d. ${d}`;
+    if (b) return t('b. {y}', { y: b });
+    if (d) return t('d. {y}', { y: d });
     return p.deceased ? '†' : '';
   }
   const isDead = (p) => p.deceased || !!p.deathYear;
@@ -227,11 +264,11 @@
   const avatar = (p, cls = '') => (p.photo ? `<div class="av ${p.gender} ${cls}" style="background-image:url('${esc(p.photo)}')"></div>` : '');
   function context(p) {
     if (p.parents.length && p.parents.every((x) => P(x).unknown)) {
-      const sibs = siblingsOf(p.id).map((x) => P(x).name);
-      return `${p.gender === 'male' ? 'Brother' : p.gender === 'female' ? 'Sister' : 'Sibling'} of ${sibs.join(', ')}`;
+      const sibs = siblingsOf(p.id).map(nm);
+      return t(`${p.gender === 'male' ? 'Brother' : p.gender === 'female' ? 'Sister' : 'Sibling'} of {names}`, { names: sibs.join(', ') });
     }
-    if (p.parents.length) return `${p.gender === 'male' ? 'Son' : p.gender === 'female' ? 'Daughter' : 'Child'} of ${p.parents.filter((x) => !P(x).unknown).map((x) => P(x).name).join(' & ')}`;
-    if (p.spouses.length) return `Spouse of ${p.spouses.map((x) => P(x).name).join(', ')}`;
+    if (p.parents.length) return t(`${p.gender === 'male' ? 'Son' : p.gender === 'female' ? 'Daughter' : 'Child'} of {names}`, { names: p.parents.filter((x) => !P(x).unknown).map(nm).join(' & ') });
+    if (p.spouses.length) return t(`${p.gender === 'male' ? 'Husband' : p.gender === 'female' ? 'Wife' : 'Spouse'} of {names}`, { names: p.spouses.map(nm).join(', ') });
     return p.location || '';
   }
 
@@ -466,8 +503,8 @@
   // ======================================================= family filter
 
   const coupleName = (id) => P(id).unknown
-    ? `the parents of ${childrenOf(id).map((c) => P(c).name.split(' ')[0]).join(', ')}`
-    : [id, ...P(id).spouses].map((x) => P(x).name).join(' & ');
+    ? t('the parents of {names}', { names: childrenOf(id).map(first).join(', ') })
+    : [id, ...P(id).spouses].map(nm).join(' & ');
   const familySize = (id) => [...familyOf(id)].filter((x) => !P(x).unknown).length;
 
   // The person the tree is "about": you, if you've said so in Relations,
@@ -522,13 +559,13 @@
     const families = full.roots.filter((u) => u.kids.length).map((u) => u.anchor);
     if (scopeId && scopeId !== '@home' && !families.some((f) => f === scopeId || P(f).spouses.includes(scopeId))) families.push(scopeId);
     const home = homeRoots();
-    const opts = (home.length ? `<option value="@home">Home: ${esc(home.map(coupleName).join(' + '))}</option>` : '')
-      + `<option value="">Everyone (${realPeople().length})</option>`
-      + families.map((id) => `<option value="${esc(id)}">Family of ${esc(coupleName(id))} (${familySize(id)})</option>`).join('');
+    const opts = (home.length ? `<option value="@home">${esc(t('Home: {names}', { names: home.map(coupleName).join(' + ') }))}</option>` : '')
+      + `<option value="">${esc(t('Everyone ({n})', { n: realPeople().length }))}</option>`
+      + families.map((id) => `<option value="${esc(id)}">${esc(t('Family of {names} ({n})', { names: coupleName(id), n: familySize(id) }))}</option>`).join('');
     const match = scopeId === '@home' ? '@home' : scopeId && families.find((f) => f === scopeId || P(f).spouses.includes(scopeId));
     for (const sel of $$('.scope-select')) { sel.innerHTML = opts; sel.value = match || ''; }
     $('#scopeWrap').classList.toggle('active', !!scopeId && scopeId !== '@home');
-    $$('[data-menu="siblings"]').forEach((b) => { b.textContent = hideSiblings ? 'Show siblings' : 'Hide siblings (direct line only)'; });
+    $$('[data-menu="siblings"]').forEach((b) => { b.textContent = t(hideSiblings ? 'Show siblings' : 'Hide siblings (direct line only)'); });
   }
 
   function setScope(id) {
@@ -537,7 +574,7 @@
     saveUI();
     render();
     fit(true, readableZoom());
-    if (scopeId && scopeId !== '@home') toast(`Showing the family of ${coupleName(scopeId)}`);
+    if (scopeId && scopeId !== '@home') toast(t('Showing the family of {names}', { names: coupleName(scopeId) }));
   }
 
   const isPhone = () => innerWidth <= 760;
@@ -558,12 +595,12 @@
 
   function toggleSiblings() {
     const focus = homePerson() || lastSelected;
-    if (!hideSiblings && !focus) { toast('Open someone first, or set who you are in Relations.'); return; }
+    if (!hideSiblings && !focus) { toast(t('Open someone first, or set who you are in Relations.')); return; }
     hideSiblings = !hideSiblings;
     saveUI();
     render();
     fit(true, readableZoom());
-    toast(hideSiblings ? `Showing only the direct line of ${P(focus).name}` : 'Showing everyone again');
+    toast(hideSiblings ? t('Showing only the direct line of {name}', { name: nm(focus) }) : t('Showing everyone again'));
   }
 
   // ============================================================== render
@@ -576,20 +613,22 @@
     return `M${sx},${sy}V${busY - r}Q${sx},${busY} ${sx + d * r},${busY}H${cx - d * r}Q${cx},${busY} ${cx},${busY + r}V${cy}`;
   }
 
-  const ordinal = (n) => n + (['th', 'st', 'nd', 'rd'][(n % 100 >= 11 && n % 100 <= 13) || n % 10 > 3 ? 0 : n % 10]);
+  const ordinal = (n) => (OR()
+    ? n + ({ 1: 'ମ', 2: 'ୟ', 3: 'ୟ', 4: 'ର୍ଥ', 6: 'ଷ୍ଠ' }[n] || 'ମ')
+    : n + (['th', 'st', 'nd', 'rd'][(n % 100 >= 11 && n % 100 <= 13) || n % 10 > 3 ? 0 : n % 10]));
 
   function cardHTML(id, x, y, copy, rank = 0, rankOf = 0) {
     const p = P(id);
     if (p.unknown) {
-      return `<div class="card unknown" data-id="${esc(id)}" style="left:${x}px;top:${y}px" tabindex="0" role="button" aria-label="Parents unknown">
-        <div class="txt"><div class="nm">Parents unknown</div><div class="sub">Add a name if you find out</div></div>
+      return `<div class="card unknown" data-id="${esc(id)}" style="left:${x}px;top:${y}px" tabindex="0" role="button" aria-label="${esc(t('Parents unknown'))}">
+        <div class="txt"><div class="nm">${esc(t('Parents unknown'))}</div><div class="sub">${esc(t('Add a name if you find out'))}</div></div>
       </div>`;
     }
     const sub = [p.nickname && `“${p.nickname}”`, years(p)].filter(Boolean).join(' · ') || p.location || '';
-    return `<div class="card ${p.gender}${isDead(p) ? ' dead' : ''}${copy ? ' copy' : ''}" data-id="${esc(id)}" style="left:${x}px;top:${y}px" tabindex="0" role="button" aria-label="${esc(p.name)}"${copy ? ' title="Also shown in their other family (see the dotted line)"' : ''}>
+    return `<div class="card ${p.gender}${isDead(p) ? ' dead' : ''}${copy ? ' copy' : ''}" data-id="${esc(id)}" style="left:${x}px;top:${y}px" tabindex="0" role="button" aria-label="${esc(nm(p))}"${copy ? ` title="${esc(t('Also shown in their other family (see the dotted line)'))}"` : ''}>
         ${avatar(p)}
-        <div class="txt"><div class="nm">${esc(p.name)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>
-        ${rank ? `<span class="rank" title="${ordinal(rank)} eldest of the ${rankOf} cousins in this generation of the family">${ordinal(rank)}</span>` : ''}
+        <div class="txt"><div class="nm">${esc(nm(p))}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>
+        ${rank ? `<span class="rank" title="${esc(t('{nth} eldest of the {n} cousins in this generation of the family', { nth: ordinal(rank), n: rankOf }))}">${ordinal(rank)}</span>` : ''}
       </div>`;
   }
 
@@ -630,7 +669,7 @@
       const d = `M${ax},${a.y}C${ax},${a.y - lift} ${cx},${c.y - lift} ${cx},${c.y}`;
       paths.push(`<path class="bridge" data-c="${esc(b.person)}" data-p="" d="${d}"/>`);
       const mx = (ax + cx) / 2, my = (a.y + c.y) / 2 - lift * 0.75;
-      paths.push(`<g class="bridge-tag" transform="translate(${mx},${my})"><rect x="-58" y="-12" width="116" height="24" rx="12"/><text text-anchor="middle" y="5">same person</text></g>`);
+      paths.push(`<g class="bridge-tag" transform="translate(${mx},${my})"><rect x="-58" y="-12" width="116" height="24" rx="12"/><text text-anchor="middle" y="5">${esc(t('same person'))}</text></g>`);
     }
 
     for (const u of visibleUnits) for (const [id, p] of u.mpos) nodes.push(cardHTML(id, p.x, p.y, u.mirror, id === u.anchor ? u.rank : 0, u.rankOf));
@@ -642,7 +681,7 @@
       const cy = u.y + CARD_H + 30;
       const n = L.descCount(u);
       const label = u.open ? '−' : `+${n}`;
-      const title = u.open ? 'Hide children' : `Show ${n} hidden`;
+      const title = u.open ? t('Hide children') : t('Show {n} hidden', { n });
       nodes.push(`<button class="tgl${u.open ? '' : ' closed'}" data-toggle="${esc(u.key)}" style="left:${cx}px;top:${cy}px" title="${title}" aria-label="${title}">${label}</button>`);
     }
 
@@ -654,8 +693,8 @@
 
     const total = realPeople().length;
     $('#stats').innerHTML = scopeId
-      ? `<span><b>${Object.values(L.people).filter((p) => !p.unknown).length}</b> of ${total} people</span><button class="link" id="showAll">Show everyone</button>`
-      : `<span><b>${total}</b> ${total === 1 ? 'person' : 'people'}</span><span><b>${total ? L.generations : 0}</b> generations</span>`;
+      ? `<span>${t('<b>{n}</b> of {total} people', { n: Object.values(L.people).filter((p) => !p.unknown).length, total })}</span><button class="link" id="showAll">${t('Show everyone')}</button>`
+      : `<span>${t(total === 1 ? '<b>{n}</b> person' : '<b>{n}</b> people', { n: total })}</span><span>${t('<b>{n}</b> generations', { n: total ? L.generations : 0 })}</span>`;
     $('#showAll')?.addEventListener('click', () => setScope(null));
     renderScopeSelect();
     updateUndoButtons();
@@ -664,7 +703,7 @@
 
     let empty = $('#emptyState');
     if (!total && !empty) {
-      document.body.insertAdjacentHTML('beforeend', `<div id="emptyState" class="empty-state"><h2>Start your family tree</h2><p>Add the first person, then add their parents, spouse and children.</p><button class="btn primary" id="emptyAdd">+ Add person</button></div>`);
+      document.body.insertAdjacentHTML('beforeend', `<div id="emptyState" class="empty-state"><h2>${t('Start your family tree')}</h2><p>${t('Add the first person, then add their parents, spouse and children.')}</p><button class="btn primary" id="emptyAdd">${t('+ Add person')}</button></div>`);
       $('#emptyAdd').onclick = () => openEditor(null);
     } else if (total && empty) empty.remove();
 
@@ -857,7 +896,7 @@
   function locate(id, { open = true } = {}) {
     if (!P(id)) return;
     const scope = currentScope();
-    if (scope && !scope.has(id)) { scopeId = null; saveUI(); render(); toast('Showing everyone'); }
+    if (scope && !scope.has(id)) { scopeId = null; saveUI(); render(); toast(t('Showing everyone')); }
     const lay = computeLayout(currentScope());
     let u = lay.unitOf.get(id)?.parent;
     let changed = false;
@@ -895,7 +934,7 @@
     applySelection();
   }
 
-  const chip = (id) => `<button class="chip" data-goto="${esc(id)}">${avatar(P(id), 'sm')}${esc(P(id).name)}</button>`;
+  const chip = (id) => `<button class="chip" data-goto="${esc(id)}">${avatar(P(id), 'sm')}${esc(nm(id))}</button>`;
 
   function renderPanel() {
     const id = selectedId, p = P(id);
@@ -903,47 +942,48 @@
     if (p.unknown) {
       const kids = childrenOf(id);
       $('#panelBody').innerHTML = `
-        <div class="p-head"><h2 class="p-name">Parents unknown</h2></div>
-        <p class="p-notes">This card links brothers and sisters whose parents aren’t in the tree yet. When you find out, click <em>Add their name</em> to make it a real person.</p>
-        <div class="p-sec"><h4>Brothers &amp; sisters · ${kids.length}</h4><div class="chips">${kids.map(chip).join('')}</div></div>
+        <div class="p-head"><h2 class="p-name">${esc(t('Parents unknown'))}</h2></div>
+        <p class="p-notes">${t('This card links brothers and sisters whose parents aren’t in the tree yet. When you find out, click <em>Add their name</em> to make it a real person.')}</p>
+        <div class="p-sec"><h4>${esc(t('Brothers & sisters'))} · ${kids.length}</h4><div class="chips">${kids.map(chip).join('')}</div></div>
         <div class="p-actions">
-          <button class="btn primary wide" data-act="edit">Add their name</button>
-          <button class="btn wide" data-act="add-child">+ Another brother or sister</button>
-          <button class="btn ghost danger wide" data-act="delete">Unlink these siblings</button>
+          <button class="btn primary wide" data-act="edit">${t('Add their name')}</button>
+          <button class="btn wide" data-act="add-child">${t('+ Another brother or sister')}</button>
+          <button class="btn ghost danger wide" data-act="delete">${t('Unlink these siblings')}</button>
         </div>`;
       $('#panel').classList.add('open');
       $('#panel').setAttribute('aria-hidden', 'false');
       return;
     }
     const facts = [
-      ['Born', p.birthYear], ['Died', p.deathYear || (p.deceased ? 'Yes' : '')],
-      ['Birth order', p.order ? `#${p.order} among siblings` : ''], ['Lives in', p.location],
+      ['Born', esc(p.birthYear)], ['Died', esc(p.deathYear || (p.deceased ? t('Yes') : ''))],
+      ['Birth order', p.order ? esc(t('#{n} among siblings', { n: p.order })) : ''], ['Lives in', esc(p.location)],
       ['Phone', p.phone ? `<a href="tel:${esc(p.phone)}">${esc(p.phone)}</a>` : ''],
     ].filter(([, v]) => v);
-    const sec = (t, ids) => ids.length ? `<div class="p-sec"><h4>${t} · ${ids.length}</h4><div class="chips">${ids.map(chip).join('')}</div></div>` : '';
+    const sec = (title, ids) => ids.length ? `<div class="p-sec"><h4>${esc(t(title))} · ${ids.length}</h4><div class="chips">${ids.map(chip).join('')}</div></div>` : '';
     $('#panelBody').innerHTML = `
       <div class="p-head">
         ${avatar(p, 'xl')}
-        <h2 class="p-name">${esc(p.name)}</h2>
+        <h2 class="p-name">${esc(nm(p))}</h2>
+        ${OR() && p.nameOr && p.nameOr !== p.name ? `<div class="p-alt">${esc(p.name)}</div>` : ''}
         ${p.nickname ? `<div class="p-nick">“${esc(p.nickname)}”</div>` : ''}
         ${years(p) ? `<div class="p-years">${esc(years(p))}</div>` : ''}
       </div>
-      ${facts.length ? `<dl class="p-facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${k === 'Phone' ? v : esc(v)}</dd>`).join('')}</dl>` : ''}
+      ${facts.length ? `<dl class="p-facts">${facts.map(([k, v]) => `<dt>${esc(t(k))}</dt><dd>${v}</dd>`).join('')}</dl>` : ''}
       ${p.notes ? `<div class="p-notes">${esc(p.notes)}</div>` : ''}
       ${sec('Parents', p.parents.filter((x) => !P(x).unknown))}
-      ${p.parents.length && p.parents.every((x) => P(x).unknown) ? '<div class="p-sec"><h4>Parents</h4><div class="muted">Not known yet</div></div>' : ''}
+      ${p.parents.length && p.parents.every((x) => P(x).unknown) ? `<div class="p-sec"><h4>${t('Parents')}</h4><div class="muted">${t('Not known yet')}</div></div>` : ''}
       ${sec(p.spouses.length > 1 ? 'Spouses' : 'Spouse', p.spouses)}
       ${sec('Siblings', siblingsOf(id))}
       ${sec('Children', childrenOf(id))}
       <div class="p-actions">
-        <button class="btn primary wide" data-act="edit">Edit details</button>
-        <button class="btn" data-act="add-parent" ${p.parents.filter((x) => !P(x).unknown).length >= 2 ? 'disabled' : ''}>+ Parent</button>
-        <button class="btn" data-act="add-spouse">+ Spouse</button>
-        <button class="btn" data-act="add-sibling">+ Sibling</button>
-        <button class="btn" data-act="add-child">+ Child</button>
-        <button class="btn wide" data-act="relate">${meId && meId !== id && P(meId) ? `How is ${esc(p.name.split(' ')[0])} related to me?` : 'Check a relationship'}</button>
-        ${childrenOf(id).length ? `<button class="btn wide" data-act="scope">Show only this family</button>` : ''}
-        <button class="btn ghost danger wide" data-act="delete">Delete</button>
+        <button class="btn primary wide" data-act="edit">${t('Edit details')}</button>
+        <button class="btn" data-act="add-parent" ${p.parents.filter((x) => !P(x).unknown).length >= 2 ? 'disabled' : ''}>${t('+ Parent')}</button>
+        <button class="btn" data-act="add-spouse">${t('+ Spouse')}</button>
+        <button class="btn" data-act="add-sibling">${t('+ Sibling')}</button>
+        <button class="btn" data-act="add-child">${t('+ Child')}</button>
+        <button class="btn wide" data-act="relate">${meId && meId !== id && P(meId) ? t('How is {name} related to me?', { name: esc(first(p)) }) : t('Check a relationship')}</button>
+        ${childrenOf(id).length ? `<button class="btn wide" data-act="scope">${t('Show only this family')}</button>` : ''}
+        <button class="btn ghost danger wide" data-act="delete">${t('Delete')}</button>
       </div>`;
     $('#panel').classList.add('open');
     $('#panel').setAttribute('aria-hidden', 'false');
@@ -972,8 +1012,8 @@
     if (!canEdit()) return;
     const p = P(id);
     const n = childrenOf(id).length;
-    if (!p.unknown && !confirm(`Delete ${p.name}?` + (n ? `\n\nTheir ${n} child(ren) stay in the tree, just without this parent.` : ''))) return;
-    remember(`delete ${p.name}`);
+    if (!p.unknown && !confirm(t('Delete {name}?', { name: nm(p) }) + (n ? '\n\n' + t('Their {n} child(ren) stay in the tree, just without this parent.', { n }) : ''))) return;
+    remember(t('delete {name}', { name: nm(p) }));
     delete state.people[id];
     for (const o of all()) {
       o.parents = o.parents.filter((x) => x !== id);
@@ -983,7 +1023,7 @@
     collapsed.delete(id);
     closePanel();
     save(); saveUI(); render();
-    toast(p.unknown ? 'Unlinked those siblings' : `Deleted ${p.name}`);
+    toast(p.unknown ? t('Unlinked those siblings') : t('Deleted {name}', { name: nm(p) }));
   }
 
   // ============================================================== search
@@ -993,7 +1033,7 @@
     if (!q) return [];
     const scored = [];
     for (const p of realPeople()) {
-      const name = p.name.toLowerCase(), nick = (p.nickname || '').toLowerCase();
+      const name = `${p.name} ${p.nameOr || ''}`.toLowerCase(), nick = (p.nickname || '').toLowerCase();
       let s = 0;
       if (name.startsWith(q) || nick.startsWith(q)) s = 4;
       else if (name.split(/\s+/).some((w) => w.startsWith(q)) || nick.includes(q)) s = 3;
@@ -1008,7 +1048,7 @@
     if (!q.trim() || i < 0) return esc(text);
     return esc(text.slice(0, i)) + '<mark>' + esc(text.slice(i, i + q.trim().length)) + '</mark>' + esc(text.slice(i + q.trim().length));
   }
-  const resultRow = (p, q, attr) => `<div class="res" ${attr}="${esc(p.id)}">${avatar(p)}<div><div class="r-name">${highlight(p.name, q)}${p.nickname ? ` <span class="r-ctx">“${highlight(p.nickname, q)}”</span>` : ''}</div><div class="r-ctx">${esc(context(p))}</div></div></div>`;
+  const resultRow = (p, q, attr) => `<div class="res" ${attr}="${esc(p.id)}">${avatar(p)}<div><div class="r-name">${highlight(nm(p), q)}${p.nickname ? ` <span class="r-ctx">“${highlight(p.nickname, q)}”</span>` : ''}</div><div class="r-ctx">${esc(context(p))}</div></div></div>`;
 
   const sInput = $('#search'), sBox = $('#searchResults');
   let sIndex = 0;
@@ -1016,7 +1056,7 @@
     const q = sInput.value;
     const res = searchPeople(q);
     sIndex = clamp(sIndex, 0, Math.max(0, res.length - 1));
-    sBox.innerHTML = res.length ? res.map((p) => resultRow(p, q, 'data-find')).join('') : (q.trim() ? '<div class="empty-res">No one found</div>' : '');
+    sBox.innerHTML = res.length ? res.map((p) => resultRow(p, q, 'data-find')).join('') : (q.trim() ? `<div class="empty-res">${t('No one found')}</div>` : '');
     $$('.res', sBox).forEach((el, i) => el.classList.toggle('active', i === sIndex));
     sBox.classList.toggle('open', !!q.trim());
   }
@@ -1044,7 +1084,7 @@
     const chipsEl = $('.pk-chips', el), wrap = $('.pk-wrap', el), input = $('.pk-input', el), list = $('.pk-list', el);
     let idx = 0;
     const draw = () => {
-      chipsEl.innerHTML = value.map((id) => `<span class="chip">${avatar(P(id), 'sm')}${esc(P(id).name)}<button type="button" class="rm" data-rm="${esc(id)}" aria-label="Remove">✕</button></span>`).join('');
+      chipsEl.innerHTML = value.map((id) => `<span class="chip">${avatar(P(id), 'sm')}${esc(nm(id))}<button type="button" class="rm" data-rm="${esc(id)}" aria-label="${esc(t('Remove'))}">✕</button></span>`).join('');
       wrap.hidden = value.length >= max;
       onChange?.([...value]);
     };
@@ -1052,7 +1092,7 @@
       const q = input.value;
       const res = searchPeople(q, 8).filter((p) => !value.includes(p.id) && !exclude.has(p.id));
       idx = clamp(idx, 0, Math.max(0, res.length - 1));
-      list.innerHTML = res.length ? res.map((p) => resultRow(p, q, 'data-pk')).join('') : '<div class="empty-res">No match. Add them first, then link.</div>';
+      list.innerHTML = res.length ? res.map((p) => resultRow(p, q, 'data-pk')).join('') : `<div class="empty-res">${t('No match. Add them first, then link.')}</div>`;
       $$('.res', list).forEach((r, i) => r.classList.toggle('active', i === idx));
       list.classList.toggle('open', !!q.trim());
     };
@@ -1072,6 +1112,7 @@
     return {
       get: () => [...value],
       set(v, ex) { value = [...v]; exclude = new Set(ex); input.value = ''; list.classList.remove('open'); draw(); },
+      redraw: draw,
     };
   }
 
@@ -1087,15 +1128,15 @@
     const el = $('#photoPreview');
     el.className = `av xl ${F('gender').value}`;
     el.style.backgroundImage = editing.photo ? `url('${editing.photo}')` : '';
-    el.textContent = editing.photo ? '' : 'No photo';
+    el.textContent = editing.photo ? '' : t('No photo');
   }
 
   function openEditor(id, preset = {}, extra = {}) {
     if (!canEdit()) return;
     const base = id ? P(id) : blankPerson(preset);
     editing = { id: base.id, isNew: !id, childOf: extra.childOf || null, photo: base.photo, oldSibs: id ? siblingsOf(id) : [] };
-    $('#editTitle').textContent = base.unknown ? 'Add the parent’s name' : id ? `Edit ${base.name}` : 'Add person';
-    const fields = { fullName: base.name, nickname: base.nickname, gender: base.gender, birthYear: base.birthYear, deathYear: base.deathYear, order: base.order, location: base.location, phone: base.phone, notes: base.notes };
+    $('#editTitle').textContent = base.unknown ? t('Add the parent’s name') : id ? t('Edit {name}', { name: nm(base) }) : t('Add person');
+    const fields = { fullName: base.name, nameOr: base.nameOr, nickname: base.nickname, gender: base.gender, birthYear: base.birthYear, deathYear: base.deathYear, order: base.order, location: base.location, phone: base.phone, notes: base.notes };
     for (const [k, v] of Object.entries(fields)) F(k).value = v ?? '';
     F('deceased').checked = !!base.deceased;
     // Placeholder names: clear the field but show the old name as a hint.
@@ -1120,7 +1161,7 @@
     const f = e.target.files[0];
     e.target.value = '';
     if (!f) return;
-    try { editing.photo = await shrinkImage(f, 220); drawPhoto(); } catch { toast('Could not read that image.'); }
+    try { editing.photo = await shrinkImage(f, 220); drawPhoto(); } catch { toast(t('Could not read that image.')); }
   });
   $('#photoRemove').onclick = () => { editing.photo = ''; drawPhoto(); };
   $('#editCancel').onclick = $('#editClose').onclick = () => dlg.close();
@@ -1132,7 +1173,7 @@
     const id = editing.id;
     const old = P(id);
     const d = {
-      ...(old || blankPerson()), id, name,
+      ...(old || blankPerson()), id, name, nameOr: F('nameOr').value.trim(),
       nickname: F('nickname').value.trim(), gender: F('gender').value,
       birthYear: F('birthYear').value, deathYear: F('deathYear').value, order: F('order').value,
       location: F('location').value.trim(), phone: F('phone').value.trim(), notes: F('notes').value.trim(),
@@ -1140,7 +1181,7 @@
       parents: parentsPicker.get(), spouses: spousePicker.get(),
       unknown: !!old?.unknown && !F('fullName').value.trim(),
     };
-    remember(old ? `edit ${old.name}` : `add ${name}`);
+    remember(old ? t('edit {name}', { name: nm(old) }) : t('add {name}', { name }));
     for (const s of old?.spouses || []) if (!d.spouses.includes(s) && P(s)) P(s).spouses = P(s).spouses.filter((x) => x !== id);
     state.people[id] = d;
     for (const s of d.spouses) if (P(s) && !P(s).spouses.includes(id)) P(s).spouses.push(id);
@@ -1159,7 +1200,7 @@
       if (sibs.includes(s) || !P(s)) continue;
       const shared = d.parents.filter((x) => P(s).parents.includes(x));
       if (shared.length && shared.every((x) => P(x).unknown)) d.parents = d.parents.filter((x) => !shared.includes(x));
-      else problems.push(`${P(s).name} shares real parents with ${name}. Change the parents to separate them.`);
+      else problems.push(t('{a} shares real parents with {b}. Change the parents to separate them.', { a: nm(s), b: name }));
     }
     for (const s of sibs) { const err = linkSiblings(id, s); if (err) problems.push(err); }
     cleanupUnknown();
@@ -1167,7 +1208,7 @@
     dlg.close();
     save();
     render();
-    toast((editing.isNew ? 'Added ' : 'Saved ') + name);
+    toast(t(editing.isNew ? 'Added {name}' : 'Saved {name}', { name: nm(d) }));
     locate(id);
   });
 
@@ -1208,8 +1249,9 @@
   const byAgeOf = (o, ifOlder, ifYounger, subject, ref) => {
     if (o === true) return ifOlder;
     if (o === false) return ifYounger;
-    const cond = `if ${P(subject).name.split(' ')[0]} is older than ${P(ref).name.split(' ')[0]}`;
-    return [`${ifOlder[0]} (${cond}), else ${ifYounger[0]}`, ifOlder[1] && ifYounger[1] ? `${ifOlder[1]} (${cond}), else ${ifYounger[1]}` : null];
+    const cond = t('if {x} is older than {y}', { x: first(subject), y: first(ref) });
+    const either = (i) => t('{a} ({cond}), else {b}', { a: ifOlder[i], cond, b: ifYounger[i] });
+    return [either(0), ifOlder[1] && ifYounger[1] ? either(1) : null];
   };
 
   const pw = (id) => ({ m: 'father', f: 'mother' }[G(id)] || 'parent');
@@ -1286,7 +1328,7 @@
     }
     if (j === k + 1) {                               // nephews and nieces
       return G(cb[1]) === 'f' ? byG(b, ['by name (bhanja)', 'by name (bhanaja)'], ['by name (bhanji)', 'by name (bhanaji)'])
-        : byG(b, ['by name (bhatija)', 'by name (bhatija)'], ['by name (bhatiji)', 'by name (bhatiji)']);
+        : byG(b, ['by name (bhatija)', 'by name (putura)'], ['by name (bhatiji)', 'by name (jhiari)']);
     }
     if (j > k) return ['by name', 'by name'];
     return [null, null];
@@ -1359,12 +1401,12 @@
       const phrase = `${sw(s)}'s ${bloodPhrase(best.r)}`;
       if (t) return { phrase, ...pair(t), n: best.n, role: { gen: best.r.k - best.r.j, side: 's', g: G(b), married: false, age: '' } };
       const via = relate(s, b, depth + 1);
-      return { phrase, hi: via.hi, or: via.or, via: P(s).name, n: best.n };
+      return { phrase, hi: via.hi, or: via.or, via: s, n: best.n };
     }
     if (depth < 1) {                                  // spouse's relative's spouse, etc.
       for (const s of A.spouses) {
         const r = relate(s, b, depth + 1);
-        if (r.phrase && !r.none) return { phrase: `${sw(s)}'s ${r.phrase}`, hi: r.hi, or: r.or, via: P(s).name, n: (r.n || 9) + 1 };
+        if (r.phrase && !r.none) return { phrase: `${sw(s)}'s ${r.phrase}`, hi: r.hi, or: r.or, via: s, n: (r.n || 9) + 1 };
       }
     }
     return { phrase: null, none: true };
@@ -1396,7 +1438,7 @@
   // What you call someone, from their role.
   function termsFromRole(r) {
     const both = (m, f) => (r.g === 'm' ? m : r.g === 'f' ? f : [`${m[0]} / ${f[0]}`, m[1] && f[1] ? `${m[1]} / ${f[1]}` : null]);
-    const byAge = (e, y) => (r.age === 'e' ? e : r.age === 'y' ? y : [`${e[0]} (if elder) or ${y[0]}`, `${e[1]} (if elder) or ${y[1]}`]);
+    const byAge = (e, y) => (r.age === 'e' ? e : r.age === 'y' ? y : [0, 1].map((i) => t('{e} (if elder) or {y}', { e: e[i], y: y[i] })));
     const side = r.side === 's' ? 'p' : r.side;
     if (r.gen >= 3) return both(['Pardada ji / Parnana ji', null], ['Pardadi ji / Parnani ji', null]);
     if (r.gen === 2) {
@@ -1410,12 +1452,14 @@
         return both(byAge(['Tau ji', 'Bada Bapa'], ['Chacha ji', 'Dada']), ['Bua ji', 'Piusi']);
       }
       if (side === 'm') return r.married ? both(['Mausa ji', 'Mausa'], ['Mami ji', 'Maain']) : both(['Mama ji', 'Mamu'], ['Mausi', 'Mausi']);
-      return both(['Chacha ji / Mama ji (depends on the side)', 'Dada / Mamu'], ['Chachi ji / Mausi (depends on the side)', 'Khudi / Mausi']);
+      const dep = ` (${t('depends on the side')})`;
+      return both(['Chacha ji / Mama ji' + dep, 'Dada / Mamu'], ['Chachi ji / Mausi' + dep, 'Khudi / Mausi']);
     }
     if (r.gen === 0) {
       if (r.married) return both(['Jija ji', 'Bhinoi'], ['Bhabhi', 'Bhauja']);
-      return both(r.age === 'y' ? ['by name', 'by name'] : r.age === 'e' ? ['Bhaiya', 'Bhai / Bhaina'] : ['Bhaiya (if elder), else by name', 'Bhai (if elder), else by name'],
-        r.age === 'y' ? ['by name', 'by name'] : r.age === 'e' ? ['Didi', 'Apa / Nani'] : ['Didi (if elder), else by name', 'Apa (if elder), else by name']);
+      const orName = (e) => t('{e} (if elder), else by name', { e });
+      return both(r.age === 'y' ? ['by name', 'by name'] : r.age === 'e' ? ['Bhaiya', 'Bhai / Bhaina'] : [orName('Bhaiya'), orName('Bhai')],
+        r.age === 'y' ? ['by name', 'by name'] : r.age === 'e' ? ['Didi', 'Apa / Nani'] : [orName('Didi'), orName('Apa')]);
     }
     return ['by name', 'by name'];
   }
@@ -1446,12 +1490,12 @@
     [/\bdidi\b/, 'hi', { gen: 0, g: 'f', age: 'e' }],
   ];
   function roleFromTerms(hi, or) {
-    for (const [lang, text] of [['hi', hi], ['or', or]]) {
-      const t = String(text || '').toLowerCase();
-      if (!t || t.startsWith('by name')) continue;
+    for (const [lg, text] of [['hi', hi], ['or', or]]) {
+      const s = toLatin(text).toLowerCase();
+      if (!s || s.startsWith('by name')) continue;
       for (const [re, l, role] of TERM_ROLES) {
-        if (l !== '*' && l !== lang) continue;
-        const m = t.match(re);
+        if (l !== '*' && l !== lg) continue;
+        const m = s.match(re);
         if (m) return { side: '', married: false, age: '', ...(typeof role === 'function' ? role(m) : role) };
       }
     }
@@ -1599,19 +1643,20 @@
     empty?.focus();
   }
 
-  const termCell = (t) => (t ? esc(t) : '<span class="muted">no common term</span>');
+  const termCell = (s, lg) => (s ? esc(lg === 'or' ? orOut(s) : hiOut(s)) : `<span class="muted">${t('no common term')}</span>`);
   function termBox(a, b) {
     const r = termsFor(a, b);
     if (r.none) return '';
     return `<div class="rel-card">
-      <div class="rc-h"><b>${esc(P(a).name)}</b> calls <b>${esc(P(b).name)}</b></div>
+      <div class="rc-h">${t('<b>{a}</b> calls <b>{b}</b>', { a: esc(nm(a)), b: esc(nm(b)) })}</div>
       <div class="rc-terms">
-        <div><span class="lang">Hindi</span><span class="term">${termCell(r.hi)}</span></div>
-        <div><span class="lang">Odia</span><span class="term">${termCell(r.or)}</span></div>
+        ${OR() ? '' : `<div><span class="lang">Hindi</span><span class="term">${termCell(r.hi, 'hi')}</span></div>`}
+        <div><span class="lang">${t('Odia')}</span><span class="term">${termCell(r.or, 'or')}</span></div>
+        ${OR() ? `<div><span class="lang">${t('Hindi')}</span><span class="term">${termCell(r.hi, 'hi')}</span></div>` : ''}
       </div>
-      ${r.via ? `<div class="rc-via">The same as ${esc(r.via)} calls them.</div>` : ''}
-      ${r.link ? `<div class="rc-via">Named through ${esc(P(r.link.id).name)}${r.link.term && r.link.term !== P(r.link.id).name ? ` (${esc(r.link.term)})` : ''}.</div>` : ''}
-      <button type="button" class="link" data-edit-term="${esc(r.phrase)}" data-a="${esc(a)}" data-b="${esc(b)}" data-hi="${esc(r.hi || '')}" data-or="${esc(r.or || '')}">Edit${r.custom ? ' (edited)' : ''}</button>
+      ${r.via ? `<div class="rc-via">${esc(t('The same as {x} calls them.', { x: nm(r.via) }))}</div>` : ''}
+      ${r.link ? `<div class="rc-via">${esc(t('Named through {x}.', { x: nm(r.link.id) + (r.link.term && r.link.term !== P(r.link.id).name ? ` (${orOut(r.link.term)})` : '') }))}</div>` : ''}
+      <button type="button" class="link" data-edit-term="${esc(r.phrase)}" data-a="${esc(a)}" data-b="${esc(b)}" data-hi="${esc(r.hi || '')}" data-or="${esc(r.or || '')}">${t(r.custom ? 'Edit (edited)' : 'Edit')}</button>
     </div>`;
   }
 
@@ -1621,11 +1666,17 @@
     let html = '';
     if (a && b) {
       const r = termsFor(a, b);
-      if (r.none) html = `<div class="rel-sentence">No link was found between <b>${esc(P(a).name)}</b> and <b>${esc(P(b).name)}</b>. Add the missing parents or spouses to connect them.</div>`;
-      else if (a === b) html = `<div class="rel-sentence">That’s the same person.</div>`;
-      else html = `<div class="rel-sentence"><b>${esc(P(b).name)}</b> is <b>${esc(P(a).name)}</b>’s <em>${esc(r.phrase)}</em>.</div>
-        ${r.link ? `<p class="rel-link">${r.blood ? 'Named the same way as' : 'Not a direct relation, so they’re named through the common link,'} <b>${esc(P(r.link.id).name)}</b>${r.link.term ? `, whom ${esc(P(a).name.split(' ')[0])} calls <em>${esc(r.link.term)}</em>` : ''}. ${esc(P(b).name)} is ${esc(P(r.link.id).name)}’s ${esc(r.link.rest)}.</p>` : ''}
+      if (r.none) html = `<div class="rel-sentence">${t('No link was found between <b>{a}</b> and <b>{b}</b>. Add the missing parents or spouses to connect them.', { a: esc(nm(a)), b: esc(nm(b)) })}</div>`;
+      else if (a === b) html = `<div class="rel-sentence">${t('That’s the same person.')}</div>`;
+      else {
+        const link = r.link && t(r.blood ? 'Named the same way as <b>{x}</b>{whom}. {b} is {x}’s {rest}.' : 'Not a direct relation, so they’re named through the common link, <b>{x}</b>{whom}. {b} is {x}’s {rest}.', {
+          x: esc(nm(r.link.id)), b: esc(nm(b)), rest: esc(relOut(r.link.rest)),
+          whom: r.link.term ? t(', whom {a} calls <em>{term}</em>', { a: esc(first(a)), term: esc(orOut(r.link.term)) }) : '',
+        });
+        html = `<div class="rel-sentence">${t('<b>{b}</b> is <b>{a}</b>’s <em>{rel}</em>.', { a: esc(nm(a)), b: esc(nm(b)), rel: esc(relOut(r.phrase)) })}</div>
+        ${link ? `<p class="rel-link">${link}</p>` : ''}
         <div class="rel-cards">${termBox(a, b)}${termBox(b, a)}</div>`;
+      }
     }
     $('#relResult').innerHTML = html;
 
@@ -1633,12 +1684,13 @@
     if (a) {
       const rows = realPeople().filter((p) => p.id !== a).map((p) => ({ p, r: termsFor(a, p.id) })).filter((x) => !x.r.none)
         .sort((x, y) => (x.r.n ?? 99) - (y.r.n ?? 99) || x.p.name.localeCompare(y.p.name));
-      $('#relAll').innerHTML = `<div class="rel-all-head"><h3>Everyone, as related to ${esc(P(a).name)}</h3>
-          <input class="pk-input" id="relFilter" placeholder="Filter…"></div>
+      const cols = (hi, or) => (OR() ? [or, hi] : [hi, or]).join('');
+      $('#relAll').innerHTML = `<div class="rel-all-head"><h3>${esc(t('Everyone, as related to {name}', { name: nm(a) }))}</h3>
+          <input class="pk-input" id="relFilter" placeholder="${esc(t('Filter…'))}"></div>
         <div class="rel-table" role="table">
-          <div class="rt-row rt-head" role="row"><span>Name</span><span>Relation</span><span>Hindi</span><span>Odia</span></div>
-          ${rows.map(({ p, r }) => `<div class="rt-row" role="row" data-rel-b="${esc(p.id)}" data-q="${esc((p.name + ' ' + (p.nickname || '') + ' ' + r.phrase + ' ' + (r.hi || '') + ' ' + (r.or || '')).toLowerCase())}">
-            <span class="rt-name">${avatar(p, 'sm')}${esc(p.name)}</span><span class="rt-rel">${esc(r.phrase)}</span><span>${termCell(r.hi)}</span><span>${termCell(r.or)}</span></div>`).join('')}
+          <div class="rt-row rt-head" role="row"><span>${t('Name')}</span><span>${t('Relation')}</span>${cols(`<span>${t('Hindi')}</span>`, `<span>${t('Odia')}</span>`)}</div>
+          ${rows.map(({ p, r }) => `<div class="rt-row" role="row" data-rel-b="${esc(p.id)}" data-q="${esc([p.name, p.nameOr, p.nickname, r.phrase, relOut(r.phrase), r.hi, r.or, orOut(r.or)].filter(Boolean).join(' ').toLowerCase())}">
+            <span class="rt-name">${avatar(p, 'sm')}${esc(nm(p))}</span><span class="rt-rel">${esc(relOut(r.phrase))}</span>${cols(`<span>${termCell(r.hi, 'hi')}</span>`, `<span>${termCell(r.or, 'or')}</span>`)}</div>`).join('')}
         </div>`;
       $('#relFilter').addEventListener('input', (e) => {
         const q = e.target.value.trim().toLowerCase();
@@ -1663,19 +1715,20 @@
     const ed = e.target.closest('[data-edit-term]');
     if (ed && canEdit()) {
       const { a, b } = ed.dataset;
-      const who = `${P(a).name.split(' ')[0]} calls ${P(b).name}`;
-      const hi = prompt(`What ${who} in Hindi:`, ed.dataset.hi);
+      const who = { a: first(a), b: nm(b) };
+      const hi = prompt(t('What {a} calls {b} in Hindi:', who), ed.dataset.hi);
       if (hi === null) return;
-      const or = prompt(`What ${who} in Odia:`, ed.dataset.or);
+      const or = prompt(t('What {a} calls {b} in Odia:', who), orOut(ed.dataset.or));
       if (or === null) return;
-      const everyone = confirm(`Use this for everyone who is ${P(a).name.split(' ')[0]}’s “${ed.dataset.editTerm}”?\n\nOK: everyone in that position\nCancel: only ${P(b).name}`);
+      const rel = relOut(ed.dataset.editTerm);
+      const everyone = confirm(t('Use this for everyone who is {a}’s “{rel}”?\n\nOK: everyone in that position\nCancel: only {b}', { ...who, rel }));
       const key = everyone ? ed.dataset.editTerm.toLowerCase() : `${a}>${b}`;
-      remember(`edit term “${ed.dataset.editTerm}”`);
+      remember(t('edit term “{rel}”', { rel }));
       state.terms = state.terms || {};
       if (!hi.trim() && !or.trim()) { delete state.terms[key]; delete state.terms[`${a}>${b}`]; }
       else state.terms[key] = { hi: hi.trim() || null, or: or.trim() || null };
       save(); updateUndoButtons(); drawRelations();
-      toast(everyone ? `Saved for every “${ed.dataset.editTerm}”` : `Saved for ${P(b).name}`);
+      toast(everyone ? t('Saved for every “{rel}”', { rel }) : t('Saved for {name}', { name: nm(b) }));
     }
   });
 
@@ -1741,12 +1794,12 @@
     sync.status = status;
     sync.error = error;
     const pill = $('#syncPill');
-    const text = {
+    const text = t({
       local: sharingSetUp() ? 'Only on this device' : '',
       connecting: 'Connecting…',
       live: sync.offline ? 'Offline' : sync.owner ? 'Shared · you’re the editor' : 'Shared · view only',
       error: 'Sharing error',
-    }[status];
+    }[status]);
     pill.hidden = !text;
     pill.dataset.status = status;
     pill.innerHTML = `<span class="dot"></span>${esc(text)}`;
@@ -1777,7 +1830,7 @@
       return 'live';
     } catch (err) {
       console.error(err);
-      setStatus('error', 'Could not reach the shared tree. Check your connection and try again.');
+      setStatus('error', t('Could not reach the shared tree. Check your connection and try again.'));
       return 'error';
     }
   }
@@ -1842,7 +1895,7 @@
         const r = await postTree({ password: sync.owner, tree: { people: state.people, terms: state.terms || {} } });
         if (r.status === 403) {
           sync.owner = null; remember_(); setStatus('live');
-          toast('Your editor password was not accepted, so this device is now view only.');
+          toast(t('Your editor password was not accepted, so this device is now view only.'));
           return false;
         }
         if (r.status !== 200) throw new Error('HTTP ' + r.status);
@@ -1867,7 +1920,7 @@
     try {
       sync.treeId = await deriveTreeId(passcode);
       const r = await postTree({ password, tree: { people: state.people, terms: state.terms || {} } });
-      if (r.status === 403) { setStatus('error', 'That passcode is already used by a tree with a different editor password.'); return false; }
+      if (r.status === 403) { setStatus('error', t('That passcode is already used by a tree with a different editor password.')); return false; }
       if (r.status !== 200) throw new Error('HTTP ' + r.status);
       sync.passcode = passcode;
       sync.owner = password;
@@ -1876,7 +1929,7 @@
       return true;
     } catch (err) {
       console.error(err);
-      setStatus('error', 'Upload failed. Check your connection and try again.');
+      setStatus('error', t('Upload failed. Check your connection and try again.'));
       return false;
     }
   }
@@ -1893,109 +1946,109 @@
     const body = $('#shareBody');
     if (sync.available === 'no-api' || sync.available === 'no-storage') {
       body.innerHTML = sync.available === 'no-api'
-        ? `<p>Sharing works on the Vercel version of this site. This copy can’t reach the family database.</p>
-           <p class="muted">Until then, your tree lives only in this browser. Use ⋯ → Export backup to keep a copy, then Import backup on the Vercel site.</p>`
-        : `<p>Almost there. The Vercel project needs its Blob store connected. The steps are in the README.</p>`;
+        ? `<p>${t('Sharing works on the Vercel version of this site. This copy can’t reach the family database.')}</p>
+           <p class="muted">${t('Until then, your tree lives only in this browser. Use ⋯ → Export backup to keep a copy, then Import backup on the Vercel site.')}</p>`
+        : `<p>${t('Almost there. The Vercel project needs its Blob store connected. The steps are in the README.')}</p>`;
       return;
     }
     if (sync.status === 'live') {
       const link = inviteLink();
       body.innerHTML = `<p class="share-live"><span class="dot"></span> ${sync.owner
-        ? 'You’re the editor on this device. Your changes are saved for everyone.'
-        : 'You’re viewing the family tree. Only its editor can make changes.'}</p>
-        <div class="f">Invite link for family (view only)
-          <div class="copy-row"><input class="pk-input" id="inviteLink" readonly value="${esc(link)}"><button class="btn" id="copyInvite">Copy</button></div>
+        ? t('You’re the editor on this device. Your changes are saved for everyone.')
+        : t('You’re viewing the family tree. Only its editor can make changes.')}</p>
+        <div class="f">${t('Invite link for family (view only)')}
+          <div class="copy-row"><input class="pk-input" id="inviteLink" readonly value="${esc(link)}"><button class="btn" id="copyInvite">${t('Copy')}</button></div>
         </div>
         <div class="share-actions">
-          <a class="btn" href="https://wa.me/?text=${encodeURIComponent('Our family tree: ' + link)}" target="_blank" rel="noopener">Send on WhatsApp</a>
-          <button class="btn ghost danger" id="leaveShare">Stop using the shared tree on this device</button>
+          <a class="btn" href="https://wa.me/?text=${encodeURIComponent(t('Our family tree: ') + link)}" target="_blank" rel="noopener">${t('Send on WhatsApp')}</a>
+          <button class="btn ghost danger" id="leaveShare">${t('Stop using the shared tree on this device')}</button>
         </div>
-        ${sync.owner ? `<details class="change-code"><summary>Change the family passcode</summary>
-          <p class="muted">Everyone will need the new invite link afterwards; the old link stops working.</p>
+        ${sync.owner ? `<details class="change-code"><summary>${t('Change the family passcode')}</summary>
+          <p class="muted">${t('Everyone will need the new invite link afterwards; the old link stops working.')}</p>
           <form id="changeForm" class="join-row">
-            <input class="pk-input" id="newCode" type="password" autocomplete="off" placeholder="New family passcode, e.g. four random words">
-            <button class="btn" type="submit">Change</button>
+            <input class="pk-input" id="newCode" type="password" autocomplete="off" placeholder="${esc(t('New family passcode, e.g. four random words'))}">
+            <button class="btn" type="submit">${t('Change')}</button>
           </form></details>` : `<form id="unlockForm" class="join-row">
-          <input class="pk-input" id="unlockCode" type="password" autocomplete="current-password" placeholder="Editor password (only if you’re the editor)">
-          <button class="btn" type="submit">Unlock editing</button>
+          <input class="pk-input" id="unlockCode" type="password" autocomplete="current-password" placeholder="${esc(t('Editor password (only if you’re the editor)'))}">
+          <button class="btn" type="submit">${t('Unlock editing')}</button>
         </form>`}
-        <p class="muted">Anyone with this link can see the tree, so send it only to family. It isn’t listed anywhere and search engines are told not to index this site. ${sync.owner ? 'Keep your editor password to yourself. Export a backup now and then (⋯ menu).' : ''}</p>`;
+        <p class="muted">${t('Anyone with this link can see the tree, so send it only to family. It isn’t listed anywhere and search engines are told not to index this site.')} ${sync.owner ? t('Keep your editor password to yourself. Export a backup now and then (⋯ menu).') : ''}</p>`;
       $('#copyInvite').onclick = async () => {
-        try { await navigator.clipboard.writeText(link); toast('Invite link copied'); }
-        catch { $('#inviteLink').select(); toast('Press Ctrl+C to copy'); }
+        try { await navigator.clipboard.writeText(link); toast(t('Invite link copied')); }
+        catch { $('#inviteLink').select(); toast(t('Press Ctrl+C to copy')); }
       };
       $('#leaveShare').onclick = () => {
-        if (!confirm('Stop showing the shared tree on this device? It stays online for everyone else, and this browser keeps a copy.')) return;
-        stopLive(); drawShare(); toast('This device is no longer connected');
+        if (!confirm(t('Stop showing the shared tree on this device? It stays online for everyone else, and this browser keeps a copy.'))) return;
+        stopLive(); drawShare(); toast(t('This device is no longer connected'));
       };
       $('#changeForm')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const code = $('#newCode').value;
-        if (code.trim().length < 12) { toast('Use at least 12 characters, e.g. four random words'); return; }
-        if (code.trim().toLowerCase() === sync.passcode.trim().toLowerCase()) { toast('That’s the current passcode'); return; }
-        if (!confirm('Change the family passcode? The old invite link will stop working, so you’ll need to send the new one to everyone.')) return;
+        if (code.trim().length < 12) { toast(t('Use at least 12 characters, e.g. four random words')); return; }
+        if (code.trim().toLowerCase() === sync.passcode.trim().toLowerCase()) { toast(t('That’s the current passcode')); return; }
+        if (!confirm(t('Change the family passcode? The old invite link will stop working, so you’ll need to send the new one to everyone.'))) return;
         const oldId = sync.treeId, pw = sync.owner;
         clearInterval(sync.timer);
         const ok = await uploadAndShare(code, pw);
         if (!ok) {
           sync.treeId = oldId; setStatus('live'); sync.timer = setInterval(poll, POLL_MS);
-          toast('Couldn’t change the passcode, so nothing was changed. That passcode may already be in use.');
+          toast(t('Couldn’t change the passcode, so nothing was changed. That passcode may already be in use.'));
           return;
         }
         await postTree({ password: pw, remove: true }, oldId).catch(() => {});
         drawShare();
-        toast('Passcode changed. Send family the new invite link.');
+        toast(t('Passcode changed. Send family the new invite link.'));
       });
       $('#unlockForm')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const pw = $('#unlockCode').value;
         const v = await postTree({ password: pw, verify: true });
-        if (v.status === 200) { sync.owner = pw; remember_(); setStatus('live'); toast('Editing unlocked on this device'); }
-        else toast('That editor password isn’t right');
+        if (v.status === 200) { sync.owner = pw; remember_(); setStatus('live'); toast(t('Editing unlocked on this device')); }
+        else toast(t('That editor password isn’t right'));
       });
       return;
     }
     if (shareStep?.empty) {
       const n = realPeople().length;
-      body.innerHTML = `<p>No family tree uses that passcode yet.</p>
-        <p class="muted">If a relative sent you the passcode, check it was typed exactly and try again.</p>
-        ${hasOwnData() ? `<p><b>Setting up sharing?</b> Choose an editor password. Only someone with it can change the tree, so keep it to yourself.</p>
+      body.innerHTML = `<p>${t('No family tree uses that passcode yet.')}</p>
+        <p class="muted">${t('If a relative sent you the passcode, check it was typed exactly and try again.')}</p>
+        ${hasOwnData() ? `<p>${t('<b>Setting up sharing?</b> Choose an editor password. Only someone with it can change the tree, so keep it to yourself.')}</p>
         <form id="setupForm" class="setup-form">
-          <input class="pk-input" id="setupPw" type="password" autocomplete="new-password" placeholder="Editor password (only you)" required>
-          <input class="pk-input" id="setupPw2" type="password" autocomplete="new-password" placeholder="Type it again" required>
+          <input class="pk-input" id="setupPw" type="password" autocomplete="new-password" placeholder="${esc(t('Editor password (only you)'))}" required>
+          <input class="pk-input" id="setupPw2" type="password" autocomplete="new-password" placeholder="${esc(t('Type it again'))}" required>
           <div class="share-actions">
-            <button class="btn" type="button" id="shareRetry">Try another passcode</button>
-            <button class="btn primary" type="submit">Upload my tree (${n} people) and share it</button>
+            <button class="btn" type="button" id="shareRetry">${t('Try another passcode')}</button>
+            <button class="btn primary" type="submit">${t('Upload my tree ({n} people) and share it', { n })}</button>
           </div>
-        </form>` : '<div class="share-actions"><button class="btn" id="shareRetry">Try another passcode</button></div>'}
+        </form>` : `<div class="share-actions"><button class="btn" id="shareRetry">${t('Try another passcode')}</button></div>`}
         ${sync.status === 'error' ? `<p class="share-error">${esc(sync.error)}</p>` : ''}`;
       $('#shareRetry').onclick = () => { shareStep = null; drawShare(); };
       $('#setupForm')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const a = $('#setupPw').value, b = $('#setupPw2').value;
-        if (a.length < 8) { toast('Use at least 8 characters for the editor password'); return; }
-        if (a !== b) { toast('The two passwords don’t match'); return; }
-        if (a.trim().toLowerCase() === shareStep.empty.trim().toLowerCase()) { toast('Use a different password from the family passcode'); return; }
+        if (a.length < 8) { toast(t('Use at least 8 characters for the editor password')); return; }
+        if (a !== b) { toast(t('The two passwords don’t match')); return; }
+        if (a.trim().toLowerCase() === shareStep.empty.trim().toLowerCase()) { toast(t('Use a different password from the family passcode')); return; }
         const ok = await uploadAndShare(shareStep.empty, a);
-        if (ok) { shareStep = null; drawShare(); toast('Your tree is now shared'); }
+        if (ok) { shareStep = null; drawShare(); toast(t('Your tree is now shared')); }
       });
       return;
     }
-    body.innerHTML = `<p>Enter the family passcode to open the family tree.</p>
+    body.innerHTML = `<p>${t('Enter the family passcode to open the family tree.')}</p>
       <form id="joinForm" class="join-row">
-        <input class="pk-input" id="joinCode" type="password" autocomplete="off" placeholder="Family passcode" required>
-        <button class="btn primary" type="submit">${sync.status === 'connecting' ? 'Opening…' : 'Open'}</button>
+        <input class="pk-input" id="joinCode" type="password" autocomplete="off" placeholder="${esc(t('Family passcode'))}" required>
+        <button class="btn primary" type="submit">${t(sync.status === 'connecting' ? 'Opening…' : 'Open')}</button>
       </form>
       ${sync.status === 'error' ? `<p class="share-error">${esc(sync.error)}</p>` : ''}
-      <p class="muted">Setting it up for the first time? Choose a family passcode that’s easy to say out loud, like four random words (“mango river silver kite”). Family use it to view the tree. You’ll set a separate editor password next.</p>`;
+      <p class="muted">${t('Setting it up for the first time? Choose a family passcode that’s easy to say out loud, like four random words (“mango river silver kite”). Family use it to view the tree. You’ll set a separate editor password next.')}</p>`;
     $('#joinForm').onsubmit = async (e) => {
       e.preventDefault();
       const code = $('#joinCode').value;
-      if (code.trim().length < 8) { toast('Use at least 8 characters, e.g. a few words'); return; }
+      if (code.trim().length < 8) { toast(t('Use at least 8 characters, e.g. a few words')); return; }
       const res = await connect(code);
       if (res === 'empty') shareStep = { empty: code };
       drawShare();
-      if (res === 'live') { shareDlg.close(); toast('Opened the family tree'); }
+      if (res === 'live') { shareDlg.close(); toast(t('Opened the family tree')); }
     };
     setTimeout(() => $('#joinCode')?.focus(), 30);
   }
@@ -2066,7 +2119,7 @@
   function renderFan() {
     const host = $('#fanView');
     const focus = fanFocus = fanDefaultFocus();
-    if (!focus) { host.innerHTML = '<div class="fan-empty">Add some people first.</div>'; return; }
+    if (!focus) { host.innerHTML = `<div class="fan-empty">${t('Add some people first.')}</div>`; return; }
     const parts = [];
     const start = -FAN_SPAN / 2;
     const clipDefs = [];
@@ -2091,10 +2144,10 @@
         const p = s.id && P(s.id);
         const mid = (a1 + a2) / 2, rm = (r1 + r2) / 2;
         const cls = p ? `seg ${p.gender}` : 'seg empty';
-        parts.push(`<path class="${cls}" d="${arcPath(r1, r2, a1, a2)}" ${p ? `data-fan="${esc(s.id)}"` : s.child && canEdit() ? `data-fan-add="${esc(s.child)}"` : ''}><title>${esc(p ? p.name : 'Add ' + s.role)}</title></path>`);
+        parts.push(`<path class="${cls}" d="${arcPath(r1, r2, a1, a2)}" ${p ? `data-fan="${esc(s.id)}"` : s.child && canEdit() ? `data-fan-add="${esc(s.child)}"` : ''}><title>${esc(p ? nm(p) : t('Add ' + s.role))}</title></path>`);
         // label: upright near the middle, radial further out
         const [tx, ty] = polar(rm, mid);
-        const words = p ? p.name.split(/\s+/) : [];
+        const words = p ? nm(p).split(/\s+/) : [];
         if (p) {
           const arcLen = (Math.PI * rm * (a2 - a1)) / 180;
           if (g <= 2) {
@@ -2103,11 +2156,11 @@
             parts.push(`<text class="fan-t g${g}" x="${tx}" y="${ty - (lines.length - 1) * 8 - (sub ? 6 : 0)}" text-anchor="middle">${lines.map((l, k) => `<tspan x="${tx}" dy="${k ? 16 : 0}">${esc(l)}</tspan>`).join('')}${sub ? `<tspan class="fan-sub" x="${tx}" dy="16">${esc(sub)}</tspan>` : ''}</text>`);
           } else {
             let rot = mid; let flip = mid > 0;
-            const label = arcLen < 20 ? '' : (arcLen < 34 ? words[0] : p.name);
+            const label = arcLen < 20 ? '' : (arcLen < 34 ? words[0] : nm(p));
             if (label) parts.push(`<text class="fan-t g${g}" transform="translate(${tx},${ty}) rotate(${flip ? rot - 90 : rot + 90})" text-anchor="middle" dy="4">${esc(label.length > 16 ? label.slice(0, 15) + '…' : label)}</text>`);
           }
         } else if (s.child && canEdit() && g <= 3) {
-          parts.push(`<text class="fan-add" x="${tx}" y="${ty + 5}" text-anchor="middle">+ ${s.role}</text>`);
+          parts.push(`<text class="fan-add" x="${tx}" y="${ty + 5}" text-anchor="middle">${esc(t('+ ' + s.role))}</text>`);
         }
       });
     }
@@ -2117,15 +2170,15 @@
     const photo = fp.photo ? `<image href="${esc(fp.photo)}" x="${-(FAN_R0 - 34)}" y="${-(FAN_R0 - 34) - 18}" width="${2 * (FAN_R0 - 34)}" height="${2 * (FAN_R0 - 34)}" clip-path="url(#fanClip)" preserveAspectRatio="xMidYMid slice"/>`
       : '';
     parts.push(`<g class="fan-center" data-fan="${esc(focus)}"><circle class="seg center ${fp.gender}" r="${FAN_R0 - 4}"/>${photo}
-      ${fp.photo ? `<text class="fan-name" y="${FAN_R0 - 38}" text-anchor="middle">${esc(fp.name.length > 20 ? fp.name.split(' ')[0] : fp.name)}</text>`
-        : `<text class="fan-name big" y="-4" text-anchor="middle"><tspan x="0">${esc(fp.name.split(' ')[0])}</tspan><tspan x="0" dy="22">${esc(fp.name.split(' ').slice(1).join(' '))}</tspan></text>`}</g>`);
+      ${fp.photo ? `<text class="fan-name" y="${FAN_R0 - 38}" text-anchor="middle">${esc(nm(fp).length > 20 ? first(fp) : nm(fp))}</text>`
+        : `<text class="fan-name big" y="-4" text-anchor="middle"><tspan x="0">${esc(first(fp))}</tspan><tspan x="0" dy="22">${esc(nm(fp).split(' ').slice(1).join(' '))}</tspan></text>`}</g>`);
     const R = FAN_R0 + Math.max(1, maxG) * FAN_RING;
     const kids = childrenOf(focus).filter((c) => !P(c).unknown);
     host.innerHTML = `<svg class="fan-svg" viewBox="${-R - 10} ${-R - 10} ${2 * R + 20} ${R + FAN_R0 + 30}" preserveAspectRatio="xMidYMid meet">
         <defs>${clipDefs.join('')}</defs>${parts.join('')}</svg>
       <div class="fan-foot glass">
-        <span class="fan-title">Ancestors of <b>${esc(fp.name)}</b></span>
-        ${kids.length ? `<span class="fan-kids">Children: ${kids.map((c) => `<button class="chip" data-fan="${esc(c)}">${avatar(P(c), 'sm')}${esc(P(c).name)}</button>`).join('')}</span>` : ''}
+        <span class="fan-title">${t('Ancestors of <b>{name}</b>', { name: esc(nm(fp)) })}</span>
+        ${kids.length ? `<span class="fan-kids">${t('Children:')} ${kids.map((c) => `<button class="chip" data-fan="${esc(c)}">${avatar(P(c), 'sm')}${esc(nm(c))}</button>`).join('')}</span>` : ''}
       </div>`;
   }
 
@@ -2158,7 +2211,7 @@
     CARD_H = large ? 132 : 84;
     ROW_H = CARD_H + 108;
     document.body.classList.toggle('large-cards', large);
-    $('[data-menu="cards"]').textContent = large ? 'Smaller profile cards' : 'Larger profile cards';
+    $('[data-menu="cards"]').textContent = t(large ? 'Smaller profile cards' : 'Larger profile cards');
     try { localStorage.setItem(UI_KEY + '.large', large ? '1' : ''); } catch { /* ignore */ }
     if (rerender) { render(); fit(); }
   }
@@ -2187,6 +2240,7 @@
     switch (b.dataset.menu) {
       case 'cards': setCardSize(!document.body.classList.contains('large-cards')); break;
       case 'siblings': toggleSiblings(); break;
+      case 'lang': toggleLang(); break;
       case 'home': goHome(); break;
       case 'undo': undo(); break;
       case 'redo': redo(); break;
@@ -2207,9 +2261,9 @@
       }
       case 'reset':
         if (!canEdit()) return;
-        if (!confirm('Replace everything with the starter tree? Export a backup first if you want to keep your data.')) return;
-        remember('reset'); state = starterTree(); collapsed.clear(); scopeId = null; closePanel(); save(); saveUI(); render(); fit();
-        toast('Reset to starter tree');
+        if (!confirm(t('Replace everything with the starter tree? Export a backup first if you want to keep your data.'))) return;
+        remember(t('reset')); state = starterTree(); collapsed.clear(); scopeId = null; closePanel(); save(); saveUI(); render(); fit();
+        toast(t('Reset to starter tree'));
         break;
     }
   });
@@ -2220,10 +2274,10 @@
     if (!f || !canEdit()) return;
     try {
       const data = normalize(JSON.parse(await f.text()));
-      if (!confirm(`Replace the current tree (${realPeople().length} people) with this file (${Object.values(data.people).filter((p) => !p.unknown).length} people)?` + (sync.status === 'live' ? '\n\nThis is the shared tree, so it changes for everyone in the family.' : ''))) return;
-      remember('import'); state = data; collapsed.clear(); scopeId = null; closePanel(); save(); saveUI(); render(); fit();
-      toast('Imported ' + f.name);
-    } catch { toast('That file is not a valid family tree backup.'); }
+      if (!confirm(t('Replace the current tree ({a} people) with this file ({b} people)?', { a: realPeople().length, b: Object.values(data.people).filter((p) => !p.unknown).length }) + (sync.status === 'live' ? '\n\n' + t('This is the shared tree, so it changes for everyone in the family.') : ''))) return;
+      remember(t('import')); state = data; collapsed.clear(); scopeId = null; closePanel(); save(); saveUI(); render(); fit();
+      toast(t('Imported {file}', { file: f.name }));
+    } catch { toast(t('That file is not a valid family tree backup.')); }
   });
   $$('.scope-select').forEach((sel) => sel.addEventListener('change', (e) => { setScope(e.target.value); menu.hidden = true; }));
   $('#bannerClose').onclick = () => { $('#banner').dataset.closed = '1'; $('#banner').hidden = true; saveUI(); };
@@ -2250,6 +2304,59 @@
     toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
   }
 
+  // ======================================================= language switch
+
+  // Fixed text in index.html: remember each piece's English once, then show it in the chosen language.
+  const DYNAMIC = '#nodes, #edges, #panelBody, #relResult, #relAll, #shareBody, #stats, #searchResults, #fanView, #syncPill, #toast, #editTitle, #photoPreview, .scope-select, .pk-chips, .pk-list, #emptyState, #zoomLabel, #langBtn, [data-i18n-html], [data-menu="siblings"], [data-menu="cards"], [data-menu="lang"]';
+  const enText = new WeakMap();
+  function translateStatic() {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (!n.nodeValue.trim() || n.parentElement.closest(DYNAMIC)) continue;
+      if (!enText.has(n)) enText.set(n, n.nodeValue);
+      const en = enText.get(n);
+      n.nodeValue = en.replace(en.trim(), t(en.trim()));
+    }
+    for (const el of $$('[placeholder], [title], [aria-label]')) {
+      if (el.closest(DYNAMIC) || el.name === 'fullName') continue;
+      for (const a of ['placeholder', 'title', 'aria-label']) {
+        if (!el.hasAttribute(a)) continue;
+        const key = 'en' + a.replace(/-./, (m) => m[1].toUpperCase()).replace(/^./, (m) => m.toUpperCase());
+        if (!(key in el.dataset)) el.dataset[key] = el.getAttribute(a);
+        el.setAttribute(a, t(el.dataset[key]));
+      }
+    }
+    for (const el of $$('[data-i18n-html]')) {
+      if (!el.dataset.en) el.dataset.en = el.innerHTML.trim().replace(/\s+/g, ' ');
+      el.innerHTML = t(el.dataset.en);
+    }
+  }
+
+  function applyLang() {
+    document.documentElement.lang = OR() ? 'or' : 'en';
+    document.title = t('Family Tree');
+    translateStatic();
+    $('#langBtn').textContent = OR() ? 'English' : 'ଓଡ଼ିଆ';
+    $('#langBtn').title = OR() ? 'ଇଂରାଜୀରେ ପଢ଼ନ୍ତୁ' : 'Read in Odia';
+    $$('[data-menu="lang"]').forEach((b) => { b.textContent = OR() ? 'Read in English' : 'ଓଡ଼ିଆରେ ପଢ଼ନ୍ତୁ'; });
+    $('[data-menu="cards"]').textContent = t(document.body.classList.contains('large-cards') ? 'Smaller profile cards' : 'Larger profile cards');
+  }
+
+  function setLang(next) {
+    lang = next;
+    try { localStorage.setItem(LANG_KEY, lang); } catch { /* ignore */ }
+    applyLang();
+    $('#emptyState')?.remove();
+    render();
+    if (selectedId) renderPanel();
+    if (relDlg.open) drawRelations();
+    if (shareDlg.open) drawShare();
+    if (dlg.open) { parentsPicker.redraw(); spousePicker.redraw(); siblingsPicker.redraw(); drawPhoto(); }
+    setStatus(sync.status, sync.error);
+  }
+  const toggleLang = () => setLang(OR() ? 'en' : 'or');
+  $('#langBtn').onclick = toggleLang;
+
   // ================================================================ boot
   $('#homeBtn').onclick = () => { if (view === 'fan') setView('tree'); goHome(); };
   $('#fabAdd').onclick = () => openEditor(null);
@@ -2268,6 +2375,7 @@
   $('#syncPill').onclick = openShare;
 
   (async () => {
+    applyLang();
     await load();
     try { if (localStorage.getItem(UI_KEY + '.large')) setCardSize(true, false); } catch { /* ignore */ }
     render();

@@ -564,3 +564,18 @@ a.btn { text-decoration: none; color: inherit; }
 
 .menu-open .fab { display: none !important; }
 #menu .phone-only button { display: block; width: 100%; }
+
+/* ---------- Odia ---------- */
+.lang-btn { flex: none; padding: 0 12px; font-family: "Noto Serif Oriya", var(--font); font-size: 15px; letter-spacing: 0; }
+html:lang(or) { --font: "EB Garamond", "Noto Serif Oriya", Garamond, "Times New Roman", serif; }
+/* Odia script has no italic and breaks apart when letter-spaced */
+html:lang(or) body * { letter-spacing: 0 !important; font-style: normal !important; }
+html:lang(or) .brand-text { text-transform: none; font-size: 21px; }
+html:lang(or) .card .nm { line-height: 1.22; }
+/* small caps-style labels read too small in Odia script */
+html:lang(or) .p-sec h4, html:lang(or) .rt-head, html:lang(or) .lang, html:lang(or) .scope-lbl { font-size: 14px; }
+html:lang(or) .card.unknown .sub { font-size: 14px; }
+.p-alt { font-size: 15px; color: var(--muted); margin-top: 2px; }
+@media (max-width: 760px) {
+  .lang-btn { height: 36px; padding: 0 10px; }
+}
